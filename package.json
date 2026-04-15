@@ -1,0 +1,64 @@
+{
+  "name": "@cueapi/mcp",
+  "version": "0.1.0",
+  "description": "Official Model Context Protocol (MCP) server for CueAPI — give your AI agent a scheduler and verification gate. Open-source execution accountability primitive for AI agents.",
+  "type": "module",
+  "bin": {
+    "cueapi-mcp": "./dist/index.js"
+  },
+  "main": "./dist/index.js",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "test": "vitest run",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "cueapi",
+    "ai-agents",
+    "agent-infrastructure",
+    "scheduling",
+    "cron",
+    "verification",
+    "accountability",
+    "llm",
+    "claude",
+    "gpt",
+    "gemini"
+  ],
+  "author": "Vector Apps Inc",
+  "license": "MIT",
+  "homepage": "https://cueapi.ai",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cueapi/cueapi-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/cueapi/cueapi-mcp/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "^3.23.0",
+    "zod-to-json-schema": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  }
+}
