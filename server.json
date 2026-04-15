@@ -1,0 +1,36 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.govindkavaturi-art/cueapi-mcp",
+  "description": "Schedule agent work and report write-once outcomes via CueAPI from any MCP host.",
+  "repository": {
+    "url": "https://github.com/cueapi/cueapi-mcp",
+    "source": "github"
+  },
+  "version": "0.1.2",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@cueapi/mcp",
+      "version": "0.1.2",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "CUEAPI_API_KEY",
+          "description": "CueAPI API key. Generate at https://cueapi.ai",
+          "isRequired": true,
+          "isSecret": true,
+          "format": "string"
+        },
+        {
+          "name": "CUEAPI_BASE_URL",
+          "description": "Override the CueAPI base URL for self-hosted instances. Defaults to https://api.cueapi.ai",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "string"
+        }
+      ]
+    }
+  ]
+}
