@@ -79,6 +79,12 @@ npm run dev     # run the server locally with tsx
 - **Core (open source):** https://github.com/cueapi/cueapi-core
 - **Model Context Protocol:** https://modelcontextprotocol.io
 
+## Changelog
+
+- **0.1.3** — Fix `cueapi_pause_cue` / `cueapi_resume_cue` to use `PATCH /v1/cues/{id}` with `{"status": "paused" | "active"}` (previously called non-existent `/pause` and `/resume` endpoints → runtime 404).
+- **0.1.2** — Register with the Official MCP Registry.
+- **0.1.0** — Initial release: 8 tools for create / list / get / pause / resume / delete cues, list executions, report outcome.
+
 ## License
 
 MIT © Vector Apps Inc.

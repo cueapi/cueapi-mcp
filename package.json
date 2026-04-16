@@ -1,6 +1,6 @@
 {
   "name": "@cueapi/mcp",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "mcpName": "io.github.govindkavaturi-art/cueapi-mcp",
   "description": "Official Model Context Protocol (MCP) server for CueAPI — give your AI agent a scheduler and verification gate. Open-source execution accountability primitive for AI agents.",
   "type": "module",
