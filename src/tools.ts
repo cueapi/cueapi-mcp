@@ -135,9 +135,13 @@ export const tools: ToolDefinition[] = [
     description: "Pause a cue. Paused cues do not fire until resumed.",
     schema: cueIdSchema,
     handler: async (client, args) =>
+      // CueAPI does not expose a dedicated pause endpoint — status is
+      // mutated via PATCH, matching the CLI's behavior in
+      // cueapi-cli/cueapi/cli.py:290-294.
       client.request(
-        "POST",
-        `/v1/cues/${encodeURIComponent(args.cue_id)}/pause`
+        "PATCH",
+        `/v1/cues/${encodeURIComponent(args.cue_id)}`,
+        { status: "paused" }
       ),
   },
   {
@@ -145,9 +149,14 @@ export const tools: ToolDefinition[] = [
     description: "Resume a previously-paused cue.",
     schema: cueIdSchema,
     handler: async (client, args) =>
+      // "active" is the default status from the Cue model enum
+      // (cueapi-core/app/models/cue.py:35 CHECK IN ('active','paused',
+      // 'completed','failed')) — same value the CLI uses at
+      // cueapi-cli/cueapi/cli.py:313.
       client.request(
-        "POST",
-        `/v1/cues/${encodeURIComponent(args.cue_id)}/resume`
+        "PATCH",
+        `/v1/cues/${encodeURIComponent(args.cue_id)}`,
+        { status: "active" }
       ),
   },
   {
