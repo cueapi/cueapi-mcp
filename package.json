@@ -1,6 +1,6 @@
 {
   "name": "@cueapi/mcp",
-  "version": "0.1.4",
+  "version": "0.2.0",
   "mcpName": "io.github.govindkavaturi-art/cueapi-mcp",
   "description": "Official Model Context Protocol (MCP) server for CueAPI — give your AI agent a scheduler and verification gate. Open-source execution accountability primitive for AI agents.",
   "type": "module",
@@ -53,11 +53,17 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
+    "better-sqlite3": "^11.3.0",
+    "express": "^4.21.0",
     "zod": "^3.23.0",
     "zod-to-json-schema": "^3.24.0"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/express": "^5.0.0",
     "@types/node": "^22.0.0",
+    "supertest": "^7.0.0",
+    "@types/supertest": "^6.0.2",
     "tsx": "^4.19.0",
     "typescript": "^5.5.0",
     "vitest": "^2.0.0"
