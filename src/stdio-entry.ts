@@ -97,7 +97,7 @@ export async function runStdio(): Promise<void> {
   // Don't log on success — MCP stdio hosts treat stderr output as diagnostic.
 }
 
-function formatToolError(toolName: string, err: unknown) {
+export function formatToolError(toolName: string, err: unknown) {
   if (err instanceof z.ZodError) {
     return {
       content: [
