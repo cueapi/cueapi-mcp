@@ -210,6 +210,17 @@ export const tools: ToolDefinition[] = [
       client.request("GET", "/v1/executions", null, args),
   },
   {
+    name: "cueapi_get_execution",
+    description:
+      "Fetch a single execution by ID, including its current state, outcome (if reported), and any attached evidence. The natural follow-up to cueapi_fire_cue (which returns an execution_id) when an agent wants to confirm the fire landed and check delivery state, instead of paginating cueapi_list_executions to find the same row.",
+    schema: executionIdSchema,
+    handler: async (client, args) =>
+      client.request(
+        "GET",
+        `/v1/executions/${encodeURIComponent(args.execution_id)}`
+      ),
+  },
+  {
     name: "cueapi_report_outcome",
     description:
       "Report the outcome of an execution. CueAPI's core accountability primitive: attach evidence (external_id, result_url, summary) that proves the work actually happened. Write-once — the outcome record is immutable.",

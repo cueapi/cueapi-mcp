@@ -52,6 +52,7 @@ Any MCP host that supports stdio servers can run this. Point the host at the `cu
 | `cueapi_resume_cue`     | Resume a paused cue                                           |
 | `cueapi_delete_cue`     | Delete a cue permanently                                      |
 | `cueapi_list_executions`| List historical executions, filter by cue/status              |
+| `cueapi_get_execution`  | Fetch a single execution by ID, with state + outcome          |
 | `cueapi_report_outcome` | Report write-once outcome with evidence (external ID / URL)   |
 
 ## Example conversation
@@ -82,6 +83,7 @@ npm run dev     # run the server locally with tsx
 
 ## Changelog
 
+- **0.4.0.** Add `cueapi_get_execution` tool: fetch a single execution by ID, including state, outcome, and evidence. Wraps `GET /v1/executions/{id}`. The natural follow-up to `cueapi_fire_cue` (which returns an `execution_id`) when an agent wants to confirm delivery state, instead of paginating `cueapi_list_executions` to find the same row.
 - **0.3.0.** Add `cueapi_fire_cue` tool: fire an existing cue immediately with an optional `payload_override` (and `merge_strategy: 'merge' | 'replace'`, default `'merge'`). Wraps `POST /v1/cues/{id}/fire`. Lets agents trigger ad-hoc one-shot executions without creating throwaway cues, and lets per-fire dynamic data flow through to webhook dispatch + worker-claim responses without mutating the stored cue.
 - **0.1.4.** Fix `cueapi_pause_cue` / `cueapi_resume_cue` to use `PATCH /v1/cues/{id}` with `{"status": "paused" | "active"}` (previously called non-existent `/pause` and `/resume` endpoints, returning a runtime 404). PR [#1](https://github.com/cueapi/cueapi-mcp/pull/1). This is the release that actually contains the fix; 0.1.3 was published prematurely with this note but without the merged code.
 - **0.1.3.** Premature publish, superseded by 0.1.4. No functional changes from 0.1.2.

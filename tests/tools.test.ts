@@ -39,6 +39,7 @@ describe("cueapi-mcp tool surface", () => {
       "cueapi_fire_cue",
       "cueapi_delete_cue",
       "cueapi_list_executions",
+      "cueapi_get_execution",
       "cueapi_report_outcome",
     ]) {
       expect(names).toContain(required);
@@ -186,5 +187,58 @@ describe("cueapi_fire_cue — HTTP contract", () => {
     const { client, calls } = stubClient();
     await tool.handler(client, { cue_id: "cue/with/slashes" });
     expect(calls[0].path).toBe("/v1/cues/cue%2Fwith%2Fslashes/fire");
+  });
+});
+
+describe("cueapi_get_execution — HTTP contract", () => {
+  // CueAPI single-execution endpoint is GET /v1/executions/{id}. These tests
+  // pin the handler's HTTP behavior so a regression to the wrong path/method
+  // (e.g. accidentally hitting /v1/executions with a query filter) is caught
+  // at CI rather than runtime.
+
+  function findTool(name: string) {
+    const t = tools.find((x) => x.name === name);
+    if (!t) throw new Error(`tool ${name} missing`);
+    return t;
+  }
+
+  function stubClient() {
+    const calls: Array<{ method: string; path: string; body?: unknown; query?: unknown }> = [];
+    const client = {
+      request: vi.fn(async (method: string, path: string, body?: unknown, query?: unknown) => {
+        calls.push({ method, path, body, query });
+        return { id: "exec_test", status: "delivered", outcome: null };
+      }),
+    } as unknown as CueAPIClient;
+    return { client, calls };
+  }
+
+  it("uses GET /v1/executions/{id}", async () => {
+    const tool = findTool("cueapi_get_execution");
+    const { client, calls } = stubClient();
+    await tool.handler(client, { execution_id: "exec_abc123" });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].method).toBe("GET");
+    expect(calls[0].path).toBe("/v1/executions/exec_abc123");
+  });
+
+  it("does not send a request body (GET endpoint)", async () => {
+    // Regression guard: if a future refactor reuses the list-executions
+    // schema or accidentally pipes args through, the handler could end up
+    // sending a body or query. This single-row endpoint takes neither.
+    const tool = findTool("cueapi_get_execution");
+    const { client, calls } = stubClient();
+    await tool.handler(client, { execution_id: "exec_abc123" });
+
+    expect(calls[0].body).toBeUndefined();
+    expect(calls[0].query).toBeUndefined();
+  });
+
+  it("url-encodes the execution_id in the path", async () => {
+    const tool = findTool("cueapi_get_execution");
+    const { client, calls } = stubClient();
+    await tool.handler(client, { execution_id: "exec/with/slashes" });
+    expect(calls[0].path).toBe("/v1/executions/exec%2Fwith%2Fslashes");
   });
 });
