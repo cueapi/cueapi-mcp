@@ -39,6 +39,11 @@ describe("cueapi-mcp tool surface", () => {
       "cueapi_fire_cue",
       "cueapi_delete_cue",
       "cueapi_list_executions",
+      "cueapi_get_execution",
+      "cueapi_list_claimable_executions",
+      "cueapi_claim_execution",
+      "cueapi_claim_next_execution",
+      "cueapi_execution_heartbeat",
       "cueapi_report_outcome",
     ]) {
       expect(names).toContain(required);
@@ -186,5 +191,282 @@ describe("cueapi_fire_cue — HTTP contract", () => {
     const { client, calls } = stubClient();
     await tool.handler(client, { cue_id: "cue/with/slashes" });
     expect(calls[0].path).toBe("/v1/cues/cue%2Fwith%2Fslashes/fire");
+  });
+});
+
+describe("cueapi_get_execution — HTTP contract", () => {
+  function findTool(name: string) {
+    const t = tools.find((x) => x.name === name);
+    if (!t) throw new Error(`tool ${name} missing`);
+    return t;
+  }
+
+  function stubClient() {
+    const calls: Array<{ method: string; path: string; body?: unknown; query?: unknown }> = [];
+    const client = {
+      request: vi.fn(async (method: string, path: string, body?: unknown, query?: unknown) => {
+        calls.push({ method, path, body, query });
+        return { id: "exec_test", status: "delivered", outcome: null };
+      }),
+    } as unknown as CueAPIClient;
+    return { client, calls };
+  }
+
+  it("uses GET /v1/executions/{id}", async () => {
+    const tool = findTool("cueapi_get_execution");
+    const { client, calls } = stubClient();
+    await tool.handler(client, { execution_id: "exec_abc123" });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].method).toBe("GET");
+    expect(calls[0].path).toBe("/v1/executions/exec_abc123");
+  });
+
+  it("does not send a request body or query (single-row endpoint)", async () => {
+    const tool = findTool("cueapi_get_execution");
+    const { client, calls } = stubClient();
+    await tool.handler(client, { execution_id: "exec_abc123" });
+    expect(calls[0].body).toBeUndefined();
+    expect(calls[0].query).toBeUndefined();
+  });
+
+  it("url-encodes the execution_id in the path", async () => {
+    const tool = findTool("cueapi_get_execution");
+    const { client, calls } = stubClient();
+    await tool.handler(client, { execution_id: "exec/with/slashes" });
+    expect(calls[0].path).toBe("/v1/executions/exec%2Fwith%2Fslashes");
+  });
+});
+
+describe("cueapi_list_claimable_executions — HTTP contract", () => {
+  // Filtering MUST be server-side (passed as query params) — NOT client-side.
+  // Client-side filter after fetch hits the LIMIT 50 starvation bug fixed
+  // in the 2026-04-25 prod incident (see app/routers/executions.py:122-131).
+  // These tests pin the contract.
+
+  function findTool(name: string) {
+    const t = tools.find((x) => x.name === name);
+    if (!t) throw new Error(`tool ${name} missing`);
+    return t;
+  }
+
+  function stubClient(response: unknown = { executions: [] }) {
+    const calls: Array<{ method: string; path: string; body?: unknown; query?: unknown }> = [];
+    const client = {
+      request: vi.fn(async (method: string, path: string, body?: unknown, query?: unknown) => {
+        calls.push({ method, path, body, query });
+        return response;
+      }),
+    } as unknown as CueAPIClient;
+    return { client, calls };
+  }
+
+  it("uses GET /v1/executions/claimable with no query when no filters provided", async () => {
+    const tool = findTool("cueapi_list_claimable_executions");
+    const { client, calls } = stubClient();
+    await tool.handler(client, {});
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].method).toBe("GET");
+    expect(calls[0].path).toBe("/v1/executions/claimable");
+    expect(calls[0].query).toEqual({});
+  });
+
+  it("passes task_name as query param `task` (server-side SQL filter)", async () => {
+    const tool = findTool("cueapi_list_claimable_executions");
+    const { client, calls } = stubClient();
+    await tool.handler(client, { task_name: "cowork-workspace" });
+    expect(calls[0].query).toEqual({ task: "cowork-workspace" });
+  });
+
+  it("passes agent as query param `agent`", async () => {
+    const tool = findTool("cueapi_list_claimable_executions");
+    const { client, calls } = stubClient();
+    await tool.handler(client, { agent: "writer-bot" });
+    expect(calls[0].query).toEqual({ agent: "writer-bot" });
+  });
+
+  it("passes both task_name + agent when both provided", async () => {
+    const tool = findTool("cueapi_list_claimable_executions");
+    const { client, calls } = stubClient();
+    await tool.handler(client, { task_name: "cowork-workspace", agent: "writer-bot" });
+    expect(calls[0].query).toEqual({ task: "cowork-workspace", agent: "writer-bot" });
+  });
+});
+
+describe("cueapi_claim_execution — HTTP contract", () => {
+  function findTool(name: string) {
+    const t = tools.find((x) => x.name === name);
+    if (!t) throw new Error(`tool ${name} missing`);
+    return t;
+  }
+
+  function stubClient() {
+    const calls: Array<{ method: string; path: string; body?: unknown; query?: unknown }> = [];
+    const client = {
+      request: vi.fn(async (method: string, path: string, body?: unknown, query?: unknown) => {
+        calls.push({ method, path, body, query });
+        return { claimed: true, execution_id: "exec_abc123", lease_seconds: 900 };
+      }),
+    } as unknown as CueAPIClient;
+    return { client, calls };
+  }
+
+  it("uses POST /v1/executions/{id}/claim with worker_id in body", async () => {
+    const tool = findTool("cueapi_claim_execution");
+    const { client, calls } = stubClient();
+    await tool.handler(client, { execution_id: "exec_abc123", worker_id: "cowork-workspace" });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].method).toBe("POST");
+    expect(calls[0].path).toBe("/v1/executions/exec_abc123/claim");
+    expect(calls[0].body).toEqual({ worker_id: "cowork-workspace" });
+  });
+
+  it("url-encodes the execution_id in the path", async () => {
+    const tool = findTool("cueapi_claim_execution");
+    const { client, calls } = stubClient();
+    await tool.handler(client, { execution_id: "exec/with/slashes", worker_id: "w" });
+    expect(calls[0].path).toBe("/v1/executions/exec%2Fwith%2Fslashes/claim");
+  });
+});
+
+describe("cueapi_claim_next_execution — HTTP contract", () => {
+  // Without task_name → single POST /v1/executions/claim.
+  // With task_name → fan-out: list_claimable filtered → pick oldest → claim by ID.
+  // These tests pin both branches.
+
+  function findTool(name: string) {
+    const t = tools.find((x) => x.name === name);
+    if (!t) throw new Error(`tool ${name} missing`);
+    return t;
+  }
+
+  function stubClient(responses: Array<unknown> = []) {
+    const calls: Array<{ method: string; path: string; body?: unknown; query?: unknown }> = [];
+    let i = 0;
+    const client = {
+      request: vi.fn(async (method: string, path: string, body?: unknown, query?: unknown) => {
+        calls.push({ method, path, body, query });
+        const resp = responses[i] ?? { claimed: true, execution_id: "exec_default", lease_seconds: 900 };
+        i++;
+        return resp;
+      }),
+    } as unknown as CueAPIClient;
+    return { client, calls };
+  }
+
+  it("without task_name → single POST /v1/executions/claim", async () => {
+    const tool = findTool("cueapi_claim_next_execution");
+    const { client, calls } = stubClient();
+    await tool.handler(client, { worker_id: "cowork-workspace" });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].method).toBe("POST");
+    expect(calls[0].path).toBe("/v1/executions/claim");
+    expect(calls[0].body).toEqual({ worker_id: "cowork-workspace" });
+  });
+
+  it("with task_name → list_claimable(task) then claim_execution(first.id)", async () => {
+    const tool = findTool("cueapi_claim_next_execution");
+    const { client, calls } = stubClient([
+      { executions: [{ execution_id: "exec_first" }, { execution_id: "exec_second" }] },
+      { claimed: true, execution_id: "exec_first", lease_seconds: 900 },
+    ]);
+    await tool.handler(client, { worker_id: "cowork-workspace", task_name: "cowork-workspace" });
+
+    expect(calls).toHaveLength(2);
+    expect(calls[0].method).toBe("GET");
+    expect(calls[0].path).toBe("/v1/executions/claimable");
+    expect(calls[0].query).toEqual({ task: "cowork-workspace" });
+
+    expect(calls[1].method).toBe("POST");
+    expect(calls[1].path).toBe("/v1/executions/exec_first/claim");
+    expect(calls[1].body).toEqual({ worker_id: "cowork-workspace" });
+  });
+
+  it("with task_name + empty list → returns no_executions_for_task without claiming", async () => {
+    const tool = findTool("cueapi_claim_next_execution");
+    const { client, calls } = stubClient([{ executions: [] }]);
+    const result = await tool.handler(client, { worker_id: "w", task_name: "no-such-task" });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].method).toBe("GET");
+    expect(result).toEqual({
+      claimed: false,
+      reason: "no_executions_for_task",
+      task_name: "no-such-task",
+    });
+  });
+});
+
+describe("cueapi_execution_heartbeat — HTTP contract", () => {
+  // Heartbeat sends worker_id via the X-Worker-Id REQUEST HEADER (not body).
+  // The MCP wrapper requires worker_id in the schema (server permits omission
+  // but bypasses race protection); these tests pin the header transport.
+
+  function findTool(name: string) {
+    const t = tools.find((x) => x.name === name);
+    if (!t) throw new Error(`tool ${name} missing`);
+    return t;
+  }
+
+  function stubClient() {
+    const calls: Array<{
+      method: string;
+      path: string;
+      body?: unknown;
+      query?: unknown;
+      apiKey?: unknown;
+      extraHeaders?: unknown;
+    }> = [];
+    const client = {
+      request: vi.fn(async (
+        method: string,
+        path: string,
+        body?: unknown,
+        query?: unknown,
+        apiKey?: unknown,
+        extraHeaders?: unknown
+      ) => {
+        calls.push({ method, path, body, query, apiKey, extraHeaders });
+        return {
+          execution_id: "exec_abc123",
+          lease_extended_until: "2026-05-01T18:00:00Z",
+          acknowledged: true,
+        };
+      }),
+    } as unknown as CueAPIClient;
+    return { client, calls };
+  }
+
+  it("uses POST /v1/executions/{id}/heartbeat with X-Worker-Id header (not body)", async () => {
+    const tool = findTool("cueapi_execution_heartbeat");
+    const { client, calls } = stubClient();
+    await tool.handler(client, { execution_id: "exec_abc123", worker_id: "cowork-workspace" });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].method).toBe("POST");
+    expect(calls[0].path).toBe("/v1/executions/exec_abc123/heartbeat");
+    expect(calls[0].body).toBeNull();
+    expect(calls[0].extraHeaders).toEqual({ "X-Worker-Id": "cowork-workspace" });
+  });
+
+  it("does NOT send worker_id in the request body (server reads it from header)", async () => {
+    const tool = findTool("cueapi_execution_heartbeat");
+    const { client, calls } = stubClient();
+    await tool.handler(client, { execution_id: "exec_abc123", worker_id: "w" });
+
+    // Critical: if a future refactor accidentally sends worker_id in body
+    // instead of header, the server will silently bypass the race protection
+    // check (it only enforces match when the header is present).
+    expect(calls[0].body).toBeNull();
+  });
+
+  it("url-encodes the execution_id in the path", async () => {
+    const tool = findTool("cueapi_execution_heartbeat");
+    const { client, calls } = stubClient();
+    await tool.handler(client, { execution_id: "exec/with/slashes", worker_id: "w" });
+    expect(calls[0].path).toBe("/v1/executions/exec%2Fwith%2Fslashes/heartbeat");
   });
 });
