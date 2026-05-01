@@ -80,6 +80,22 @@ const listExecutionsSchema = z.object({
   offset: z.number().int().min(0).optional(),
 });
 
+const fireCueSchema = z.object({
+  cue_id: z.string().describe("CueAPI cue ID to fire (e.g. 'cue_...')"),
+  payload_override: z
+    .record(z.unknown())
+    .optional()
+    .describe(
+      "Override the cue's default payload for this fire only. Persisted on the resulting execution row, never on the cue itself."
+    ),
+  merge_strategy: z
+    .enum(["merge", "replace"])
+    .optional()
+    .describe(
+      "How payload_override combines with the cue's stored payload. 'merge' (default) = shallow-merge, override wins on key collisions. 'replace' = use override as the final payload, ignore cue.payload."
+    ),
+});
+
 const reportOutcomeSchema = z.object({
   execution_id: z.string(),
   success: z.boolean(),
@@ -129,6 +145,22 @@ export const tools: ToolDefinition[] = [
     schema: cueIdSchema,
     handler: async (client, args) =>
       client.request("GET", `/v1/cues/${encodeURIComponent(args.cue_id)}`),
+  },
+  {
+    name: "cueapi_fire_cue",
+    description:
+      "Fire an existing cue immediately, optionally overriding its payload for this single invocation. Creates an execution that runs through the cue's normal delivery path, regardless of the cue's schedule. Use payload_override + merge_strategy to swap or merge per-fire dynamic data without mutating the stored cue.",
+    schema: fireCueSchema,
+    handler: async (client, args) => {
+      const body: Record<string, unknown> = {};
+      if (args.payload_override) body.payload_override = args.payload_override;
+      if (args.merge_strategy) body.merge_strategy = args.merge_strategy;
+      return client.request(
+        "POST",
+        `/v1/cues/${encodeURIComponent(args.cue_id)}/fire`,
+        body
+      );
+    },
   },
   {
     name: "cueapi_pause_cue",

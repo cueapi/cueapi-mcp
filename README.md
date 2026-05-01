@@ -47,6 +47,7 @@ Any MCP host that supports stdio servers can run this. Point the host at the `cu
 | `cueapi_create_cue`     | Create a recurring (cron) or one-time (`at`) cue              |
 | `cueapi_list_cues`      | List cues, filter by status                                   |
 | `cueapi_get_cue`        | Fetch details for a single cue                                |
+| `cueapi_fire_cue`       | Fire an existing cue immediately, optional payload override   |
 | `cueapi_pause_cue`      | Pause a cue so it stops firing                                |
 | `cueapi_resume_cue`     | Resume a paused cue                                           |
 | `cueapi_delete_cue`     | Delete a cue permanently                                      |
@@ -81,6 +82,7 @@ npm run dev     # run the server locally with tsx
 
 ## Changelog
 
+- **0.3.0.** Add `cueapi_fire_cue` tool: fire an existing cue immediately with an optional `payload_override` (and `merge_strategy: 'merge' | 'replace'`, default `'merge'`). Wraps `POST /v1/cues/{id}/fire`. Lets agents trigger ad-hoc one-shot executions without creating throwaway cues, and lets per-fire dynamic data flow through to webhook dispatch + worker-claim responses without mutating the stored cue.
 - **0.1.4.** Fix `cueapi_pause_cue` / `cueapi_resume_cue` to use `PATCH /v1/cues/{id}` with `{"status": "paused" | "active"}` (previously called non-existent `/pause` and `/resume` endpoints, returning a runtime 404). PR [#1](https://github.com/cueapi/cueapi-mcp/pull/1). This is the release that actually contains the fix; 0.1.3 was published prematurely with this note but without the merged code.
 - **0.1.3.** Premature publish, superseded by 0.1.4. No functional changes from 0.1.2.
 - **0.1.2.** Register with the Official MCP Registry.

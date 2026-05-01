@@ -36,6 +36,7 @@ describe("cueapi-mcp tool surface", () => {
       "cueapi_create_cue",
       "cueapi_list_cues",
       "cueapi_get_cue",
+      "cueapi_fire_cue",
       "cueapi_delete_cue",
       "cueapi_list_executions",
       "cueapi_report_outcome",
@@ -95,5 +96,95 @@ describe("cueapi_pause_cue / cueapi_resume_cue — HTTP contract", () => {
     const { client, calls } = stubClient();
     await tool.handler(client, { cue_id: "cue/with/slashes" });
     expect(calls[0].path).toBe("/v1/cues/cue%2Fwith%2Fslashes");
+  });
+});
+
+describe("cueapi_fire_cue — HTTP contract", () => {
+  // CueAPI fire endpoint is POST /v1/cues/{id}/fire. Body may include
+  // payload_override (overrides the cue's default payload for this fire only)
+  // and merge_strategy ('replace' | 'merge'). These tests pin the handler's
+  // HTTP behavior so a regression to the wrong path/method is caught at CI.
+
+  function findTool(name: string) {
+    const t = tools.find((x) => x.name === name);
+    if (!t) throw new Error(`tool ${name} missing`);
+    return t;
+  }
+
+  function stubClient() {
+    const calls: Array<{ method: string; path: string; body?: unknown; query?: unknown }> = [];
+    const client = {
+      request: vi.fn(async (method: string, path: string, body?: unknown, query?: unknown) => {
+        calls.push({ method, path, body, query });
+        return { execution_id: "exec_test", status: "queued" };
+      }),
+    } as unknown as CueAPIClient;
+    return { client, calls };
+  }
+
+  it("fires with no payload_override → POST /v1/cues/{id}/fire with empty body", async () => {
+    const tool = findTool("cueapi_fire_cue");
+    const { client, calls } = stubClient();
+    await tool.handler(client, { cue_id: "cue_abc123" });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].method).toBe("POST");
+    expect(calls[0].path).toBe("/v1/cues/cue_abc123/fire");
+    expect(calls[0].body).toEqual({});
+  });
+
+  it("passes payload_override + merge_strategy='replace' through to body", async () => {
+    const tool = findTool("cueapi_fire_cue");
+    const { client, calls } = stubClient();
+    const payload = { task: "downstream-handler", scope: "single-row" };
+    await tool.handler(client, {
+      cue_id: "cue_abc123",
+      payload_override: payload,
+      merge_strategy: "replace",
+    });
+
+    expect(calls[0].body).toEqual({ payload_override: payload, merge_strategy: "replace" });
+  });
+
+  it("passes payload_override + merge_strategy='merge' through to body", async () => {
+    // 'merge' is the API's default and the most common case (swap a few
+    // fields, keep the rest from cue.payload). Pin it explicitly so a
+    // future refactor can't silently drop the strategy field on the way
+    // through.
+    const tool = findTool("cueapi_fire_cue");
+    const { client, calls } = stubClient();
+    const payload = { run_id: "ad-hoc-2026-05-01" };
+    await tool.handler(client, {
+      cue_id: "cue_abc123",
+      payload_override: payload,
+      merge_strategy: "merge",
+    });
+
+    expect(calls[0].body).toEqual({ payload_override: payload, merge_strategy: "merge" });
+  });
+
+  it("omits merge_strategy when only payload_override is set — server applies its own default ('merge')", async () => {
+    // The handler intentionally only includes fields that were explicitly
+    // passed. When the caller omits merge_strategy, the API's Pydantic
+    // default of 'merge' applies server-side. This test pins that
+    // contract: don't accidentally start sending a client-side default
+    // that would override the server's choice.
+    const tool = findTool("cueapi_fire_cue");
+    const { client, calls } = stubClient();
+    const payload = { task: "x" };
+    await tool.handler(client, {
+      cue_id: "cue_abc123",
+      payload_override: payload,
+    });
+
+    expect(calls[0].body).toEqual({ payload_override: payload });
+    expect(calls[0].body).not.toHaveProperty("merge_strategy");
+  });
+
+  it("url-encodes the cue_id in the path", async () => {
+    const tool = findTool("cueapi_fire_cue");
+    const { client, calls } = stubClient();
+    await tool.handler(client, { cue_id: "cue/with/slashes" });
+    expect(calls[0].path).toBe("/v1/cues/cue%2Fwith%2Fslashes/fire");
   });
 });
