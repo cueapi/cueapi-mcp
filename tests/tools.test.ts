@@ -133,10 +133,10 @@ describe("cueapi_fire_cue — HTTP contract", () => {
     expect(calls[0].body).toEqual({});
   });
 
-  it("includes payload_override + merge_strategy in body when provided", async () => {
+  it("passes payload_override + merge_strategy='replace' through to body", async () => {
     const tool = findTool("cueapi_fire_cue");
     const { client, calls } = stubClient();
-    const payload = { message: "hello", task: "downstream-handler", reply_cue_id: "cue_xyz" };
+    const payload = { task: "downstream-handler", scope: "single-row" };
     await tool.handler(client, {
       cue_id: "cue_abc123",
       payload_override: payload,
@@ -144,6 +144,41 @@ describe("cueapi_fire_cue — HTTP contract", () => {
     });
 
     expect(calls[0].body).toEqual({ payload_override: payload, merge_strategy: "replace" });
+  });
+
+  it("passes payload_override + merge_strategy='merge' through to body", async () => {
+    // 'merge' is the API's default and the most common case (swap a few
+    // fields, keep the rest from cue.payload). Pin it explicitly so a
+    // future refactor can't silently drop the strategy field on the way
+    // through.
+    const tool = findTool("cueapi_fire_cue");
+    const { client, calls } = stubClient();
+    const payload = { run_id: "ad-hoc-2026-05-01" };
+    await tool.handler(client, {
+      cue_id: "cue_abc123",
+      payload_override: payload,
+      merge_strategy: "merge",
+    });
+
+    expect(calls[0].body).toEqual({ payload_override: payload, merge_strategy: "merge" });
+  });
+
+  it("omits merge_strategy when only payload_override is set — server applies its own default ('merge')", async () => {
+    // The handler intentionally only includes fields that were explicitly
+    // passed. When the caller omits merge_strategy, the API's Pydantic
+    // default of 'merge' applies server-side. This test pins that
+    // contract: don't accidentally start sending a client-side default
+    // that would override the server's choice.
+    const tool = findTool("cueapi_fire_cue");
+    const { client, calls } = stubClient();
+    const payload = { task: "x" };
+    await tool.handler(client, {
+      cue_id: "cue_abc123",
+      payload_override: payload,
+    });
+
+    expect(calls[0].body).toEqual({ payload_override: payload });
+    expect(calls[0].body).not.toHaveProperty("merge_strategy");
   });
 
   it("url-encodes the cue_id in the path", async () => {

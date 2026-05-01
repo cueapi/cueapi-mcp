@@ -86,13 +86,13 @@ const fireCueSchema = z.object({
     .record(z.unknown())
     .optional()
     .describe(
-      "Override the cue's default payload for this fire only. Common fields when using cues for ad-hoc messaging: { message, instruction, task, reply_cue_id, routing, from }."
+      "Override the cue's default payload for this fire only. Persisted on the resulting execution row, never on the cue itself."
     ),
   merge_strategy: z
-    .enum(["replace", "merge"])
+    .enum(["merge", "replace"])
     .optional()
     .describe(
-      "How payload_override is applied. 'replace' = use override as-is. 'merge' = shallow-merge with cue's default. Default 'replace'."
+      "How payload_override combines with the cue's stored payload. 'merge' (default) = shallow-merge, override wins on key collisions. 'replace' = use override as the final payload, ignore cue.payload."
     ),
 });
 
@@ -149,7 +149,7 @@ export const tools: ToolDefinition[] = [
   {
     name: "cueapi_fire_cue",
     description:
-      "Fire an existing cue immediately, optionally overriding its payload for this single invocation. The primary primitive for ad-hoc one-shot triggers and for using cues as a messaging channel between agents (with payload_override carrying { message, instruction, task, reply_cue_id }).",
+      "Fire an existing cue immediately, optionally overriding its payload for this single invocation. Creates an execution that runs through the cue's normal delivery path, regardless of the cue's schedule. Use payload_override + merge_strategy to swap or merge per-fire dynamic data without mutating the stored cue.",
     schema: fireCueSchema,
     handler: async (client, args) => {
       const body: Record<string, unknown> = {};
