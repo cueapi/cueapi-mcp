@@ -80,6 +80,22 @@ const listExecutionsSchema = z.object({
   offset: z.number().int().min(0).optional(),
 });
 
+const fireCueSchema = z.object({
+  cue_id: z.string().describe("CueAPI cue ID to fire (e.g. 'cue_...')"),
+  payload_override: z
+    .record(z.unknown())
+    .optional()
+    .describe(
+      "Override the cue's default payload for this fire only. Common fields when using cues for ad-hoc messaging: { message, instruction, task, reply_cue_id, routing, from }."
+    ),
+  merge_strategy: z
+    .enum(["replace", "merge"])
+    .optional()
+    .describe(
+      "How payload_override is applied. 'replace' = use override as-is. 'merge' = shallow-merge with cue's default. Default 'replace'."
+    ),
+});
+
 const reportOutcomeSchema = z.object({
   execution_id: z.string(),
   success: z.boolean(),
@@ -129,6 +145,22 @@ export const tools: ToolDefinition[] = [
     schema: cueIdSchema,
     handler: async (client, args) =>
       client.request("GET", `/v1/cues/${encodeURIComponent(args.cue_id)}`),
+  },
+  {
+    name: "cueapi_fire_cue",
+    description:
+      "Fire an existing cue immediately, optionally overriding its payload for this single invocation. The primary primitive for ad-hoc one-shot triggers and for using cues as a messaging channel between agents (with payload_override carrying { message, instruction, task, reply_cue_id }).",
+    schema: fireCueSchema,
+    handler: async (client, args) => {
+      const body: Record<string, unknown> = {};
+      if (args.payload_override) body.payload_override = args.payload_override;
+      if (args.merge_strategy) body.merge_strategy = args.merge_strategy;
+      return client.request(
+        "POST",
+        `/v1/cues/${encodeURIComponent(args.cue_id)}/fire`,
+        body
+      );
+    },
   },
   {
     name: "cueapi_pause_cue",
