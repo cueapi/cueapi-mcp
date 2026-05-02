@@ -49,7 +49,8 @@ export class CueAPIClient {
     path: string,
     body?: Record<string, unknown> | null,
     query?: Record<string, string | number | boolean | undefined>,
-    apiKey?: string
+    apiKey?: string,
+    extraHeaders?: Record<string, string>
   ): Promise<T> {
     const effectiveKey = apiKey ?? this.defaultApiKey;
     if (!effectiveKey) {
@@ -71,14 +72,19 @@ export class CueAPIClient {
       : "";
 
     const url = `${this.baseUrl}${path}${qs}`;
+    // Defaults first, then extraHeaders override — but Authorization is set
+    // last so a caller-supplied extraHeaders can never accidentally clobber
+    // the bearer token.
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+      "User-Agent": "cueapi-mcp/0.2.0",
+      ...(extraHeaders ?? {}),
+      Authorization: `Bearer ${effectiveKey}`,
+    };
     const res = await fetch(url, {
       method,
-      headers: {
-        Authorization: `Bearer ${effectiveKey}`,
-        "Content-Type": "application/json",
-        Accept: "application/json",
-        "User-Agent": "cueapi-mcp/0.2.0",
-      },
+      headers,
       body: body ? JSON.stringify(body) : undefined,
     });
 

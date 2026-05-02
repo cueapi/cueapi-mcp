@@ -96,6 +96,51 @@ const fireCueSchema = z.object({
     ),
 });
 
+const claimableExecutionsSchema = z.object({
+  task_name: z
+    .string()
+    .optional()
+    .describe(
+      "Filter by payload.task at the SQL layer (server-side). Required for single-purpose workers — without it, sibling tasks ahead of yours in the LIMIT 50 window will starve your handler."
+    ),
+  agent: z
+    .string()
+    .optional()
+    .describe("Filter by payload.agent at the SQL layer (server-side)."),
+});
+
+const claimExecutionSchema = z.object({
+  execution_id: z.string().describe("Execution UUID from cueapi_list_claimable_executions"),
+  worker_id: z
+    .string()
+    .describe(
+      "Stable identifier for this worker — caller-defined, NOT session/process-scoped. Recommended: a slug like 'cowork-workspace' or 'your-agent-name'. Same value must be used across the claim → heartbeat → outcome lifecycle so the server can enforce ownership on heartbeat + outcome calls."
+    ),
+});
+
+const claimNextExecutionSchema = z.object({
+  worker_id: z
+    .string()
+    .describe(
+      "Stable caller-defined identifier (see cueapi_claim_execution for guidance)."
+    ),
+  task_name: z
+    .string()
+    .optional()
+    .describe(
+      "Optional task filter. The server's POST /v1/executions/claim does NOT support a task filter today, so when task_name is provided the tool internally fans out: list_claimable(task=X) → pick oldest → claim_execution(id, worker_id). Two API calls per claim attempt; tiny race window where another worker could grab the picked execution between list and claim, but the claim is atomic so worst case is 409 and the caller retries."
+    ),
+});
+
+const executionHeartbeatSchema = z.object({
+  execution_id: z.string().describe("Execution currently in 'delivering' state, claimed by worker_id."),
+  worker_id: z
+    .string()
+    .describe(
+      "Same worker_id used at claim time. Sent as the X-Worker-Id request header. Server returns 403 if it doesn't match the recorded claimed_by_worker. Required by this MCP wrapper (server permits omission, but omitting silently bypasses race protection)."
+    ),
+});
+
 const reportOutcomeSchema = z.object({
   execution_id: z.string(),
   success: z.boolean(),
@@ -208,6 +253,92 @@ export const tools: ToolDefinition[] = [
     schema: listExecutionsSchema,
     handler: async (client, args) =>
       client.request("GET", "/v1/executions", null, args),
+  },
+  {
+    name: "cueapi_get_execution",
+    description:
+      "Fetch a single execution by ID, including its current state, outcome (if reported), and any attached evidence. The natural follow-up to cueapi_fire_cue (which returns an execution_id) when an agent wants to confirm the fire landed and check delivery state, instead of paginating cueapi_list_executions.",
+    schema: executionIdSchema,
+    handler: async (client, args) =>
+      client.request(
+        "GET",
+        `/v1/executions/${encodeURIComponent(args.execution_id)}`
+      ),
+  },
+  {
+    name: "cueapi_list_claimable_executions",
+    description:
+      "List unclaimed worker-transport executions ready for processing (status pending or retry_ready). Filters server-side by payload.task and/or payload.agent — pass task_name when your worker only handles one task type, otherwise sibling tasks in the LIMIT 50 window can starve you. Different from cueapi_list_executions, which is all-states historical across all transports.",
+    schema: claimableExecutionsSchema,
+    handler: async (client, args) => {
+      const query: Record<string, string> = {};
+      if (args.task_name) query.task = args.task_name;
+      if (args.agent) query.agent = args.agent;
+      return client.request("GET", "/v1/executions/claimable", null, query);
+    },
+  },
+  {
+    name: "cueapi_claim_execution",
+    description:
+      "Atomically claim a specific worker-transport execution for processing. Use BEFORE running a handler so no other worker races you. Conditional UPDATE WHERE status IN ('pending', 'retry_ready'); returns 409 if already claimed or not eligible. Response includes lease_seconds (default 900s = 15 min); send execution_heartbeat well before that to extend.",
+    schema: claimExecutionSchema,
+    handler: async (client, args) =>
+      client.request(
+        "POST",
+        `/v1/executions/${encodeURIComponent(args.execution_id)}/claim`,
+        { worker_id: args.worker_id }
+      ),
+  },
+  {
+    name: "cueapi_claim_next_execution",
+    description:
+      "Claim the next available worker-transport execution. Without task_name, the server picks the oldest pending across any of your worker cues — fine for single-handler workers. With task_name, the tool fans out (list_claimable filtered → pick oldest → claim by ID) so multi-handler workers don't accidentally grab work for the wrong task. Returns 409 if no executions are claimable. Response includes lease_seconds (default 900s).",
+    schema: claimNextExecutionSchema,
+    handler: async (client, args) => {
+      if (args.task_name) {
+        // Server's POST /v1/executions/claim doesn't accept a task filter
+        // today — fan out: filtered claimable → pick oldest → claim by ID.
+        // Tiny race window between list and claim is bounded by the atomic
+        // claim returning 409 if another worker beat us. Caller retries.
+        const list = await client.request<{
+          executions: Array<{ execution_id: string }>;
+        }>("GET", "/v1/executions/claimable", null, { task: args.task_name });
+        if (!list.executions || list.executions.length === 0) {
+          return {
+            claimed: false,
+            reason: "no_executions_for_task",
+            task_name: args.task_name,
+          };
+        }
+        const next = list.executions[0];
+        return client.request(
+          "POST",
+          `/v1/executions/${encodeURIComponent(next.execution_id)}/claim`,
+          { worker_id: args.worker_id }
+        );
+      }
+      // No task filter — server picks oldest of any type owned by this user.
+      return client.request(
+        "POST",
+        "/v1/executions/claim",
+        { worker_id: args.worker_id }
+      );
+    },
+  },
+  {
+    name: "cueapi_execution_heartbeat",
+    description:
+      "Extend the claim lease on an in-flight execution. Send well before the lease expires (default 900s = 15 min from claim or last heartbeat); ~5 min cadence is a safe baseline. Response includes lease_extended_until — schedule your next heartbeat against that. Server returns 403 if X-Worker-Id doesn't match the worker that claimed; 409 if the execution is no longer in 'delivering' state. Skip entirely if your handler reliably completes well within the lease.",
+    schema: executionHeartbeatSchema,
+    handler: async (client, args) =>
+      client.request(
+        "POST",
+        `/v1/executions/${encodeURIComponent(args.execution_id)}/heartbeat`,
+        null,
+        undefined,
+        undefined,
+        { "X-Worker-Id": args.worker_id }
+      ),
   },
   {
     name: "cueapi_report_outcome",

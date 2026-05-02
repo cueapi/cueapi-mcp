@@ -52,6 +52,11 @@ Any MCP host that supports stdio servers can run this. Point the host at the `cu
 | `cueapi_resume_cue`     | Resume a paused cue                                           |
 | `cueapi_delete_cue`     | Delete a cue permanently                                      |
 | `cueapi_list_executions`| List historical executions, filter by cue/status              |
+| `cueapi_get_execution`  | Fetch a single execution by ID, with state + outcome          |
+| `cueapi_list_claimable_executions` | List unclaimed worker executions, filter server-side by task/agent |
+| `cueapi_claim_execution`| Atomically claim a specific execution for processing          |
+| `cueapi_claim_next_execution` | Claim the next available execution (optional task filter) |
+| `cueapi_execution_heartbeat` | Extend the claim lease on an in-flight execution         |
 | `cueapi_report_outcome` | Report write-once outcome with evidence (external ID / URL)   |
 
 ## Example conversation
@@ -82,6 +87,7 @@ npm run dev     # run the server locally with tsx
 
 ## Changelog
 
+- **0.4.0.** Add five execution-lifecycle tools — `cueapi_get_execution`, `cueapi_list_claimable_executions`, `cueapi_claim_execution`, `cueapi_claim_next_execution`, `cueapi_execution_heartbeat`. Closes the receive-claim-process-complete loop for MCP-host agents that want to consume worker-transport executions from in-session (e.g. Claude Desktop, Cursor, Zed). Highlights: `list_claimable_executions` filters server-side via `task` / `agent` query params (client-side filtering hits a known LIMIT-50 starvation bug); `claim_next_execution` accepts an optional `task_name` and internally fans out (filtered list → pick oldest → claim by ID) since the server doesn't yet support a task filter on the bare claim endpoint; `execution_heartbeat` sends `worker_id` via the `X-Worker-Id` request header (the server's transport for that field) and requires it in the schema so misconfigured callers fail at the wrapper instead of silently bypassing race protection. Internal: `CueAPIClient.request()` gains an optional `extraHeaders` parameter to support per-call custom headers.
 - **0.3.0.** Add `cueapi_fire_cue` tool: fire an existing cue immediately with an optional `payload_override` (and `merge_strategy: 'merge' | 'replace'`, default `'merge'`). Wraps `POST /v1/cues/{id}/fire`. Lets agents trigger ad-hoc one-shot executions without creating throwaway cues, and lets per-fire dynamic data flow through to webhook dispatch + worker-claim responses without mutating the stored cue.
 - **0.1.4.** Fix `cueapi_pause_cue` / `cueapi_resume_cue` to use `PATCH /v1/cues/{id}` with `{"status": "paused" | "active"}` (previously called non-existent `/pause` and `/resume` endpoints, returning a runtime 404). PR [#1](https://github.com/cueapi/cueapi-mcp/pull/1). This is the release that actually contains the fix; 0.1.3 was published prematurely with this note but without the merged code.
 - **0.1.3.** Premature publish, superseded by 0.1.4. No functional changes from 0.1.2.
