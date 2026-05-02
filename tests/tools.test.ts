@@ -37,6 +37,7 @@ describe("cueapi-mcp tool surface", () => {
       "cueapi_list_cues",
       "cueapi_get_cue",
       "cueapi_fire_cue",
+      "cueapi_update_cue",
       "cueapi_delete_cue",
       "cueapi_list_executions",
       "cueapi_get_execution",
@@ -468,5 +469,106 @@ describe("cueapi_execution_heartbeat — HTTP contract", () => {
     const { client, calls } = stubClient();
     await tool.handler(client, { execution_id: "exec/with/slashes", worker_id: "w" });
     expect(calls[0].path).toBe("/v1/executions/exec%2Fwith%2Fslashes/heartbeat");
+  });
+});
+
+describe("cueapi_update_cue — HTTP contract", () => {
+  // PATCH /v1/cues/{id} with sparse body. cron and at are mutually exclusive
+  // (one-time vs recurring). callback_url maps to body.callback.url. These
+  // tests pin the body shape so a regression to the wrong path/method or a
+  // mis-shaped schedule update is caught at CI.
+
+  function findTool(name: string) {
+    const t = tools.find((x) => x.name === name);
+    if (!t) throw new Error(`tool ${name} missing`);
+    return t;
+  }
+
+  function stubClient() {
+    const calls: Array<{ method: string; path: string; body?: unknown; query?: unknown }> = [];
+    const client = {
+      request: vi.fn(async (method: string, path: string, body?: unknown, query?: unknown) => {
+        calls.push({ method, path, body, query });
+        return { id: "cue_test", status: "active" };
+      }),
+    } as unknown as CueAPIClient;
+    return { client, calls };
+  }
+
+  it("uses PATCH /v1/cues/{id}", async () => {
+    const tool = findTool("cueapi_update_cue");
+    const { client, calls } = stubClient();
+    await tool.handler(client, { cue_id: "cue_abc123", name: "renamed" });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].method).toBe("PATCH");
+    expect(calls[0].path).toBe("/v1/cues/cue_abc123");
+  });
+
+  it("sends only the fields explicitly passed (sparse update)", async () => {
+    const tool = findTool("cueapi_update_cue");
+    const { client, calls } = stubClient();
+    await tool.handler(client, { cue_id: "cue_abc123", name: "x" });
+    expect(calls[0].body).toEqual({ name: "x" });
+  });
+
+  it("maps callback_url to body.callback.url (server contract)", async () => {
+    const tool = findTool("cueapi_update_cue");
+    const { client, calls } = stubClient();
+    await tool.handler(client, {
+      cue_id: "cue_abc123",
+      callback_url: "https://example.com/hook",
+    });
+    expect(calls[0].body).toEqual({ callback: { url: "https://example.com/hook" } });
+  });
+
+  it("cron triggers schedule.type='recurring'", async () => {
+    const tool = findTool("cueapi_update_cue");
+    const { client, calls } = stubClient();
+    await tool.handler(client, { cue_id: "cue_abc123", cron: "0 9 * * *" });
+    expect(calls[0].body).toEqual({
+      schedule: { type: "recurring", cron: "0 9 * * *" },
+    });
+  });
+
+  it("at triggers schedule.type='once'", async () => {
+    const tool = findTool("cueapi_update_cue");
+    const { client, calls } = stubClient();
+    await tool.handler(client, { cue_id: "cue_abc123", at: "2030-01-01T00:00:00Z" });
+    expect(calls[0].body).toEqual({
+      schedule: { type: "once", at: "2030-01-01T00:00:00Z" },
+    });
+  });
+
+  it("cron + timezone bundles timezone into the schedule object", async () => {
+    const tool = findTool("cueapi_update_cue");
+    const { client, calls } = stubClient();
+    await tool.handler(client, {
+      cue_id: "cue_abc123",
+      cron: "0 9 * * *",
+      timezone: "America/Los_Angeles",
+    });
+    expect(calls[0].body).toEqual({
+      schedule: {
+        type: "recurring",
+        cron: "0 9 * * *",
+        timezone: "America/Los_Angeles",
+      },
+    });
+  });
+
+  it("payload field passes through as body.payload", async () => {
+    const tool = findTool("cueapi_update_cue");
+    const { client, calls } = stubClient();
+    const payload = { task: "x", target: "y" };
+    await tool.handler(client, { cue_id: "cue_abc123", payload });
+    expect(calls[0].body).toEqual({ payload });
+  });
+
+  it("url-encodes the cue_id in the path", async () => {
+    const tool = findTool("cueapi_update_cue");
+    const { client, calls } = stubClient();
+    await tool.handler(client, { cue_id: "cue/with/slashes", name: "x" });
+    expect(calls[0].path).toBe("/v1/cues/cue%2Fwith%2Fslashes");
   });
 });

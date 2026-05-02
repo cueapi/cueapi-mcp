@@ -60,6 +60,30 @@ const cueIdSchema = z.object({
   cue_id: z.string().describe("CueAPI cue ID (e.g. 'cue_...')"),
 });
 
+const updateCueSchema = z.object({
+  cue_id: z.string().describe("CueAPI cue ID to update"),
+  name: z.string().min(1).optional().describe("New cue name"),
+  cron: z
+    .string()
+    .optional()
+    .describe("New cron expression (also changes schedule type to recurring)"),
+  at: z
+    .string()
+    .optional()
+    .describe("New ISO-8601 timestamp (also changes schedule type to one-time)"),
+  callback_url: z
+    .string()
+    .url()
+    .optional()
+    .describe("New callback URL"),
+  timezone: z.string().optional().describe("New IANA timezone"),
+  payload: z
+    .record(z.unknown())
+    .optional()
+    .describe("New stored payload (the cue's default payload, applied on every fire unless overridden by payload_override)"),
+  description: z.string().optional().describe("New description"),
+});
+
 const listCuesSchema = z.object({
   status: z
     .enum(["active", "paused"])
@@ -203,6 +227,38 @@ export const tools: ToolDefinition[] = [
       return client.request(
         "POST",
         `/v1/cues/${encodeURIComponent(args.cue_id)}/fire`,
+        body
+      );
+    },
+  },
+  {
+    name: "cueapi_update_cue",
+    description:
+      "Update an existing cue's mutable fields (name, schedule, callback URL, timezone, payload, description). Only provided fields are updated; omitted fields are unchanged. Wraps PATCH /v1/cues/{id}. For status changes (active/paused) use cueapi_pause_cue / cueapi_resume_cue.",
+    schema: updateCueSchema,
+    handler: async (client, args) => {
+      const body: Record<string, unknown> = {};
+      if (args.name !== undefined) body.name = args.name;
+      if (args.description !== undefined) body.description = args.description;
+      if (args.payload !== undefined) body.payload = args.payload;
+      if (args.callback_url !== undefined) body.callback = { url: args.callback_url };
+      // Schedule update: cron and at are mutually exclusive (one-time vs recurring).
+      // Mirror the CLI's pattern (cueapi-cli/cueapi/cli.py update command).
+      if (args.cron !== undefined || args.at !== undefined) {
+        const schedule: Record<string, unknown> = {};
+        if (args.cron !== undefined) {
+          schedule.type = "recurring";
+          schedule.cron = args.cron;
+        } else if (args.at !== undefined) {
+          schedule.type = "once";
+          schedule.at = args.at;
+        }
+        if (args.timezone !== undefined) schedule.timezone = args.timezone;
+        body.schedule = schedule;
+      }
+      return client.request(
+        "PATCH",
+        `/v1/cues/${encodeURIComponent(args.cue_id)}`,
         body
       );
     },
