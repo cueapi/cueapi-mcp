@@ -1,0 +1,94 @@
+{
+  "manifest_version": 1,
+  "description": "Parity tracking for @cueapi/mcp against the hosted CueAPI API. Enumerates which API surfaces this MCP server exposes as tools and which it doesn't, so drift becomes visible at audit time. Per the 3-layer parity discipline (PR template + this manifest + Backlog rows for each port).",
+  "private_source_repo": "https://github.com/cueapi/cueapi",
+  "private_source_paths": [
+    "app/routers/",
+    "app/schemas/"
+  ],
+  "last_full_audit": "2026-05-04",
+  "package_version_at_audit": "0.4.1",
+  "audit_methodology": "Walk every endpoint in private cueapi/app/routers/ and check coverage in src/tools.ts. For each covered tool, walk the corresponding schemas/*.py to verify field-level coverage in the tool's zod input schema + the response shape it surfaces. Drift goes in `endpoints_missing` or `tool_param_drift` keyed by tool name.",
+  "audit_cadence": "Monthly full sweep. Per-PR diffs handled via the .github/pull_request_template.md `Parity Impact` section in the private repo.",
+
+  "endpoints_covered": {
+    "POST /v1/cues": {"tool": "cueapi_create_cue"},
+    "GET /v1/cues": {"tool": "cueapi_list_cues"},
+    "GET /v1/cues/{id}": {"tool": "cueapi_get_cue"},
+    "PATCH /v1/cues/{id}": {"tool": "cueapi_update_cue"},
+    "DELETE /v1/cues/{id}": {"tool": "cueapi_delete_cue"},
+    "POST /v1/cues/{id}/fire": {"tool": "cueapi_fire_cue"},
+    "POST /v1/cues/{id}/pause": {"tool": "cueapi_pause_cue"},
+    "POST /v1/cues/{id}/resume": {"tool": "cueapi_resume_cue"},
+    "GET /v1/executions": {"tool": "cueapi_list_executions"},
+    "GET /v1/executions/{id}": {"tool": "cueapi_get_execution"},
+    "GET /v1/executions/claimable": {"tool": "cueapi_list_claimable_executions"},
+    "POST /v1/executions/{id}/claim": {"tool": "cueapi_claim_execution"},
+    "POST /v1/executions/claim-next": {"tool": "cueapi_claim_next_execution"},
+    "POST /v1/executions/{id}/heartbeat": {"tool": "cueapi_execution_heartbeat"},
+    "POST /v1/executions/{id}/outcome": {"tool": "cueapi_report_outcome"}
+  },
+
+  "endpoints_missing": {
+    "POST /v1/auth/register": {"blocker": "Account creation is out of scope for an MCP server; users register via web/CLI."},
+    "GET /v1/auth/me": {"blocker": "MCP tooling validates the API key implicitly via every call's 401 surface; a dedicated whoami tool is low-value. Could add for parity if other agents request it."},
+    "POST /v1/device-codes": {"blocker": "Device-code OAuth flow is CLI-only (cueapi-cli auth)."},
+    "POST /v1/auth/key/regenerate": {"blocker": "Risky destructive op; intentionally not surfaced. Re-evaluate if MCP-driven workflow needs it."},
+    "GET /v1/auth/webhook-secret": {"blocker": "Webhook-secret retrieval — agents running their own webhook servers may want this. Re-evaluate."},
+    "POST /v1/auth/webhook-secret/regenerate": {"blocker": "Destructive; re-evaluate."},
+    "POST /v1/executions/{id}/replay": {"blocker": "Used for retry-from-failure flows; not yet wrapped. Worth adding for symmetry with claim/heartbeat surface."},
+    "POST /v1/executions/{id}/verification-pending": {"blocker": "Verification-state transition; not yet wrapped. Pairs with the verify endpoint below."},
+    "POST /v1/executions/{id}/verify": {"blocker": "Mark execution verified — not yet wrapped."},
+    "POST /v1/worker/heartbeat": {"blocker": "Worker-level heartbeat is for the cueapi-worker daemon, not user-facing MCP tooling. Per-execution heartbeat (cueapi_execution_heartbeat) is the relevant surface for MCP consumers."},
+    "GET /v1/workers": {"blocker": "List workers + heartbeat status; useful for fleet visibility. Worth adding for symmetry with cueapi-python #24's same-listed gap."},
+    "GET /v1/usage": {"blocker": "Plan, cue count, execution usage, rate limit info. Not yet wrapped."},
+    "POST /v1/billing/checkout": {"blocker": "Hosted-only — wrap if/when hosted users need programmatic checkout from MCP."},
+    "POST /v1/billing/portal": {"blocker": "Hosted-only."},
+    "Messaging primitive (all of /v1/agents, /v1/messages, /v1/agents/{id}/inbox)": {
+      "blocker": "Phase 12.1.5 messaging primitive is on prod but not yet exposed in MCP. Significant new surface — agent identity, send_message, inbox poll, idempotency-keyed sends, reply threading.",
+      "tracking": "Major MCP extension. Should land before push delivery (v1.5) goes wide. Same shape as cueapi-python #24's listed gap."
+    }
+  },
+
+  "tool_param_drift": {
+    "cueapi_get_execution": {
+      "covered_response_fields": [
+        "id", "cue_id", "scheduled_for", "status", "http_status", "attempts",
+        "error_message", "started_at", "delivered_at", "last_attempt_at",
+        "outcome", "outcome_state", "triggered_by", "created_at", "updated_at"
+      ],
+      "missing_response_fields": [
+        "payload (PR #589, just shipped — coverage gap to close)",
+        "evidence_external_id, evidence_result_url, evidence_result_type, evidence_summary, evidence_validation_state, evidence_assertions",
+        "claimed_by_worker, claimed_at, last_heartbeat_at",
+        "chain_parent_id, chain_depth"
+      ],
+      "tracking": "Backlog row 'Parity port: PR #589 → cueapi-mcp tools' (priority=now, blocked on PR #589 merge + cueapi-python release)."
+    },
+    "cueapi_create_cue / cueapi_update_cue": {
+      "covered_request_fields": [
+        "name", "description", "schedule", "callback_url", "method",
+        "timezone", "default_payload", "task_name", "platform"
+      ],
+      "missing_request_fields": [
+        "delivery, alerts, catch_up, verification, on_success_fire (cue chaining)",
+        "require_payload_override, required_payload_keys (PR #590 — coverage gap)",
+        "stats response shape"
+      ],
+      "tracking": "Backlog row 'Parity port: PR #590 → cueapi-mcp tools' (priority=now, blocked on PR #590 merge + cueapi-python release)."
+    },
+    "cueapi_fire_cue": {
+      "covered_request_fields": ["cue_id", "payload_override", "merge_strategy"],
+      "notes": "Today's primary surface for the team-comm payload_override convention. Field coverage is current as of 2026-05-04."
+    }
+  },
+
+  "ported_pr_history": [
+    "Phase 18 Gap 3a (execution-lifecycle endpoints — claim, claim-next, heartbeat, outcome): PORTED — PR #11 (Mike-authored, merged 2026-05-02). Tools cueapi_claim_execution, cueapi_claim_next_execution, cueapi_execution_heartbeat, cueapi_report_outcome.",
+    "PR #281 (payload_override on /fire): PORTED — included in PR #11 series via cueapi_fire_cue acceptance of payload_override + merge_strategy.",
+    "PR #589 (expose payload on GET /v1/executions): NOT YET PORTED — Backlog row 'Parity port: PR #589 → cueapi-mcp tools' priority=now, blocked.",
+    "PR #590 (require_payload_override + required_payload_keys + cue.fire enforcement): NOT YET PORTED — Backlog row 'Parity port: PR #590 → cueapi-mcp tools' priority=now, blocked."
+  ],
+
+  "notes": "First seeded 2026-05-04 by CC-cue-mac-app per CTO-PARITY-L2-MCP-ROUTE, mirroring the cueapi-python #24 + cueapi-cli #25 shape. Layer 2 of the 3-layer parity discipline (PR template + this manifest + Backlog rows). Schema may evolve based on what auditors actually need; the `endpoints_missing` and `tool_param_drift` sections are deliberately verbose because they ARE the audit checklist for catching MCP up to the hosted API."
+}
