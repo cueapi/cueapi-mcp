@@ -54,6 +54,20 @@ const createCueSchema = z.object({
     .optional()
     .describe("Arbitrary JSON payload delivered with the cue"),
   description: z.string().optional(),
+  // Per PR #590 (server-side payload_override enforcement). Both default
+  // false/null on the server; opt-in per cue.
+  require_payload_override: z
+    .boolean()
+    .optional()
+    .describe(
+      "If true, fires of this cue without payload_override are rejected with HTTP 400 payload_override_required. Use for cues where the per-fire override is required (e.g. coordination cues that must carry a token + recipient task on every fire)."
+    ),
+  required_payload_keys: z
+    .array(z.string())
+    .optional()
+    .describe(
+      "Keys that must be present in the resolved post-merge payload. Missing keys yield HTTP 400 missing_required_payload_keys with a missing_keys list. With merge_strategy=replace at fire time, cue.payload is dropped from resolution and required keys must be supplied directly in the override. Tip: include both 'message' and 'instruction' to enforce byte-equality between them (see fire error inconsistent_message_instruction)."
+    ),
 });
 
 const cueIdSchema = z.object({
@@ -82,6 +96,20 @@ const updateCueSchema = z.object({
     .optional()
     .describe("New stored payload (the cue's default payload, applied on every fire unless overridden by payload_override)"),
   description: z.string().optional().describe("New description"),
+  // Per PR #590. Both nullable on PATCH so callers can clear or modify
+  // the per-cue enforcement opt-in independently.
+  require_payload_override: z
+    .boolean()
+    .optional()
+    .describe(
+      "Toggle the require_payload_override enforcement on this cue. See create_cue for semantics."
+    ),
+  required_payload_keys: z
+    .array(z.string())
+    .optional()
+    .describe(
+      "Replace the required_payload_keys list. Pass [] to clear. See create_cue for semantics."
+    ),
 });
 
 const listCuesSchema = z.object({
@@ -198,6 +226,12 @@ export const tools: ToolDefinition[] = [
       if (args.timezone) body.timezone = args.timezone;
       if (args.payload) body.payload = args.payload;
       if (args.description) body.description = args.description;
+      if (args.require_payload_override !== undefined) {
+        body.require_payload_override = args.require_payload_override;
+      }
+      if (args.required_payload_keys !== undefined) {
+        body.required_payload_keys = args.required_payload_keys;
+      }
       return client.request("POST", "/v1/cues", body);
     },
   },
@@ -218,7 +252,7 @@ export const tools: ToolDefinition[] = [
   {
     name: "cueapi_fire_cue",
     description:
-      "Fire an existing cue immediately, optionally overriding its payload for this single invocation. Creates an execution that runs through the cue's normal delivery path, regardless of the cue's schedule. Use payload_override + merge_strategy to swap or merge per-fire dynamic data without mutating the stored cue.",
+      "Fire an existing cue immediately, optionally overriding its payload for this single invocation. Creates an execution that runs through the cue's normal delivery path, regardless of the cue's schedule. Use payload_override + merge_strategy to swap or merge per-fire dynamic data without mutating the stored cue. Per-cue enforcement (set on the cue via cueapi_create_cue / cueapi_update_cue) can reject fires server-side: HTTP 400 payload_override_required (require_payload_override=true and no override sent), HTTP 400 missing_required_payload_keys (response includes a missing_keys list), HTTP 400 inconsistent_message_instruction (when both 'message' and 'instruction' are required, server enforces byte-equality so different recipient handlers route on the same content).",
     schema: fireCueSchema,
     handler: async (client, args) => {
       const body: Record<string, unknown> = {};
@@ -255,6 +289,12 @@ export const tools: ToolDefinition[] = [
         }
         if (args.timezone !== undefined) schedule.timezone = args.timezone;
         body.schedule = schedule;
+      }
+      if (args.require_payload_override !== undefined) {
+        body.require_payload_override = args.require_payload_override;
+      }
+      if (args.required_payload_keys !== undefined) {
+        body.required_payload_keys = args.required_payload_keys;
       }
       return client.request(
         "PATCH",
@@ -305,7 +345,7 @@ export const tools: ToolDefinition[] = [
   {
     name: "cueapi_list_executions",
     description:
-      "List executions — the historical record of times a cue actually fired. Optionally filter by cue, status, or paginate.",
+      "List executions — the historical record of times a cue actually fired. Optionally filter by cue, status, or paginate. Each row includes the effective 'payload' field (payload_override if set on the fire, otherwise the parent cue's payload).",
     schema: listExecutionsSchema,
     handler: async (client, args) =>
       client.request("GET", "/v1/executions", null, args),
@@ -313,7 +353,7 @@ export const tools: ToolDefinition[] = [
   {
     name: "cueapi_get_execution",
     description:
-      "Fetch a single execution by ID, including its current state, outcome (if reported), and any attached evidence. The natural follow-up to cueapi_fire_cue (which returns an execution_id) when an agent wants to confirm the fire landed and check delivery state, instead of paginating cueapi_list_executions.",
+      "Fetch a single execution by ID, including its current state, outcome (if reported), any attached evidence, and the effective payload the handler/webhook saw at delivery time. The 'payload' field is payload_override when the fire passed one, otherwise the parent cue's payload at delivery time — useful for audit, forensics, and 'reply via fresh API call' flows from agents not running inside the bundled-worker handler context. The natural follow-up to cueapi_fire_cue (which returns an execution_id).",
     schema: executionIdSchema,
     handler: async (client, args) =>
       client.request(

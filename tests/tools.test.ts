@@ -571,4 +571,124 @@ describe("cueapi_update_cue — HTTP contract", () => {
     await tool.handler(client, { cue_id: "cue/with/slashes", name: "x" });
     expect(calls[0].path).toBe("/v1/cues/cue%2Fwith%2Fslashes");
   });
+
+  // Per cueapi PR #590 — server-side payload_override enforcement.
+  it("passes require_payload_override through unchanged (true)", async () => {
+    const tool = findTool("cueapi_update_cue");
+    const { client, calls } = stubClient();
+    await tool.handler(client, {
+      cue_id: "cue_abc123",
+      require_payload_override: true,
+    });
+    expect(calls[0].body).toEqual({ require_payload_override: true });
+  });
+
+  it("passes require_payload_override=false explicitly (clear opt-in)", async () => {
+    // Sparse-update semantics: when the caller explicitly passes false,
+    // the body must contain the false value, not omit it. Pin against a
+    // refactor that conflates "unset" and "false".
+    const tool = findTool("cueapi_update_cue");
+    const { client, calls } = stubClient();
+    await tool.handler(client, {
+      cue_id: "cue_abc123",
+      require_payload_override: false,
+    });
+    expect(calls[0].body).toEqual({ require_payload_override: false });
+  });
+
+  it("passes required_payload_keys through unchanged", async () => {
+    const tool = findTool("cueapi_update_cue");
+    const { client, calls } = stubClient();
+    await tool.handler(client, {
+      cue_id: "cue_abc123",
+      required_payload_keys: ["task", "token", "message"],
+    });
+    expect(calls[0].body).toEqual({
+      required_payload_keys: ["task", "token", "message"],
+    });
+  });
+
+  it("passes required_payload_keys=[] explicitly (clear list)", async () => {
+    // Server treats [] as "no required keys" (clear the list). Pin against
+    // a refactor that treats empty array as "unset" and drops the field.
+    const tool = findTool("cueapi_update_cue");
+    const { client, calls } = stubClient();
+    await tool.handler(client, {
+      cue_id: "cue_abc123",
+      required_payload_keys: [],
+    });
+    expect(calls[0].body).toEqual({ required_payload_keys: [] });
+  });
+});
+
+describe("cueapi_create_cue — HTTP contract", () => {
+  // POST /v1/cues. Sparse body — only fields the caller explicitly set are
+  // sent. Pinned so a future refactor doesn't accidentally start sending
+  // client-side defaults that conflict with the server's defaults.
+
+  function findTool(name: string) {
+    const t = tools.find((x) => x.name === name);
+    if (!t) throw new Error(`tool ${name} missing`);
+    return t;
+  }
+
+  function stubClient() {
+    const calls: Array<{ method: string; path: string; body?: unknown; query?: unknown }> = [];
+    const client = {
+      request: vi.fn(async (method: string, path: string, body?: unknown, query?: unknown) => {
+        calls.push({ method, path, body, query });
+        return { id: "cue_test", status: "active" };
+      }),
+    } as unknown as CueAPIClient;
+    return { client, calls };
+  }
+
+  it("uses POST /v1/cues with name only (worker omitted, no schedule)", async () => {
+    const tool = findTool("cueapi_create_cue");
+    const { client, calls } = stubClient();
+    await tool.handler(client, { name: "test-cue" });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].method).toBe("POST");
+    expect(calls[0].path).toBe("/v1/cues");
+    expect(calls[0].body).toEqual({ name: "test-cue" });
+  });
+
+  // Per cueapi PR #590 — server-side payload_override enforcement.
+  it("passes require_payload_override + required_payload_keys through to body", async () => {
+    const tool = findTool("cueapi_create_cue");
+    const { client, calls } = stubClient();
+    await tool.handler(client, {
+      name: "coord-cue",
+      worker: true,
+      require_payload_override: true,
+      required_payload_keys: ["task", "token"],
+    });
+    expect(calls[0].body).toEqual({
+      name: "coord-cue",
+      worker: true,
+      require_payload_override: true,
+      required_payload_keys: ["task", "token"],
+    });
+  });
+
+  it("passes require_payload_override=false explicitly", async () => {
+    const tool = findTool("cueapi_create_cue");
+    const { client, calls } = stubClient();
+    await tool.handler(client, {
+      name: "permissive-cue",
+      require_payload_override: false,
+    });
+    expect(calls[0].body).toEqual({
+      name: "permissive-cue",
+      require_payload_override: false,
+    });
+  });
+
+  it("omits both new PR #590 fields when caller doesn't pass them — server applies its own defaults", async () => {
+    const tool = findTool("cueapi_create_cue");
+    const { client, calls } = stubClient();
+    await tool.handler(client, { name: "default-cue" });
+    expect(calls[0].body).not.toHaveProperty("require_payload_override");
+    expect(calls[0].body).not.toHaveProperty("required_payload_keys");
+  });
 });
