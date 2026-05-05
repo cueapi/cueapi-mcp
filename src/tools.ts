@@ -181,6 +181,23 @@ const reportOutcomeSchema = z.object({
     .describe("Short human summary of what the agent did"),
 });
 
+// Agent Directory — Phase A surfaces 2 (Agent Directory PRD 2026-05-05).
+// Tools that the LLM calls when it needs to discover peers + their
+// reachability. Intentionally orthogonal to cueapi_send_message: the
+// roster + describe tools answer "who exists?" / "how do I reach X?",
+// the send_message tool actually delivers. Together they replace the
+// 6-field cue-fire dance per the PRD problem statement.
+const agentsListSchema = z.object({});
+
+const agentsDescribeSchema = z.object({
+  name: z
+    .string()
+    .min(1)
+    .describe(
+      "Agent name (per-tenant slug — e.g. 'cue-mac-app', NOT a cue_id). Use cueapi_agents_list first to discover names."
+    ),
+});
+
 // Messaging primitive — Phase 12.1.5. Minimum-viable scope: send_message
 // only, with the §17 BCC-light notify field (PR #619). Full messaging
 // lifecycle (get/read/ack/inbox/sent) tracked separately in
@@ -471,9 +488,28 @@ export const tools: ToolDefinition[] = [
     },
   },
   {
+    name: "cueapi_agents_list",
+    description:
+      "Return the caller's agent directory snapshot — display-optimized for prompt-injection / discovery (Agent Directory PRD §Surface 1, cueapi PR #630). Always-full list (no pagination). Each entry: name (per-tenant slug — addressable as `<name>@<user_slug>` or just `<name>` in same tenant), display_name, description (free-form self-description), online (derived from last_seen_at within 5min), last_seen_relative ('active now' / '5m ago' / 'offline 2h' / 'never'), preferred_contact ('sync' = push-capable, 'async' = poll-only), status (caller-asserted online/offline/away override). Drops opaque IDs / secrets / timestamps / tenancy metadata vs the management-surface cueapi_list_cues. Use this first when you need to message a peer, then pass the resolved name to cueapi_send_message's `to` field.",
+    schema: agentsListSchema,
+    handler: async (client) =>
+      client.request("GET", "/v1/agents/roster"),
+  },
+  {
+    name: "cueapi_agents_describe",
+    description:
+      "Fetch a single agent's full management record by name. Returns the management-surface `AgentResponse` shape (id, name, display_name, description, status, webhook_url, capabilities/metadata, timestamps, etc.) — richer than the roster entry returned by cueapi_agents_list. Useful when you need an agent's webhook URL, full metadata, or canonical timestamps. Pass the slug-form name (e.g. 'cue-mac-app'), NOT a cue_id or opaque agent ID.",
+    schema: agentsDescribeSchema,
+    handler: async (client, args) =>
+      client.request(
+        "GET",
+        `/v1/agents/${encodeURIComponent(args.name)}`
+      ),
+  },
+  {
     name: "cueapi_send_message",
     description:
-      "Send a direct agent-to-agent message via the Phase 12.1.5 messaging primitive. Use the `notify` field for §17 BCC-light fan-out (PR #619): each agent in `notify` gets a stripped notification copy alongside the main delivery, threaded with the main message so they can reply into the conversation. Sender (`from`) goes via the X-Cueapi-From-Agent request header (server contract — NOT in body). Useful for agent-to-agent coordination where the cue/execution model is heavier than needed (no scheduling, no handler binding, no reply-cue indirection).",
+      "Send a direct agent-to-agent message via the Phase 12.1.5 messaging primitive. The natural primitive for inter-agent comm — addresses peers by name (resolve via cueapi_agents_list first if you don't know the recipient slug). Use the `notify` field for §17 BCC-light fan-out (PR #619): each agent in `notify` gets a stripped notification copy alongside the main delivery, threaded with the main message so they can reply into the conversation. Sender (`from`) goes via the X-Cueapi-From-Agent request header (server contract — NOT in body). Replaces the heavier cue-fire flow (no scheduling, no handler binding, no reply-cue indirection) for routine cross-agent comm.",
     schema: sendMessageSchema,
     handler: async (client, args) => {
       const body: Record<string, unknown> = {

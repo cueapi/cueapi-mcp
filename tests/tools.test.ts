@@ -801,3 +801,84 @@ describe("cueapi_send_message — HTTP contract (PR #619 BCC-light)", () => {
     expect(parsed.body.length).toBe(32768);
   });
 });
+
+describe("cueapi_agents_list / cueapi_agents_describe — HTTP contract (Agent Directory PRD)", () => {
+  // Surface 2 of the Agent Directory productization (cueapi PR #630).
+  // agents_list wraps the new GET /v1/agents/roster (display-optimized
+  // snapshot for prompt-injection at session boot). agents_describe
+  // wraps the existing GET /v1/agents/{name} (richer management view).
+  //
+  // These tests pin the path + method so a regression to the wrong
+  // endpoint (e.g. accidentally pointing agents_list at /v1/agents
+  // which is the paginated management surface, not the display roster)
+  // is caught at CI time.
+
+  function findTool(name: string) {
+    const t = tools.find((x) => x.name === name);
+    if (!t) throw new Error(`tool ${name} missing`);
+    return t;
+  }
+
+  function stubClient() {
+    const calls: Array<{
+      method: string;
+      path: string;
+      body?: unknown;
+      query?: unknown;
+    }> = [];
+    const client = {
+      request: vi.fn(async (method: string, path: string, body?: unknown, query?: unknown) => {
+        calls.push({ method, path, body, query });
+        return { agents: [], generated_at: "2026-05-05T17:00:00Z" };
+      }),
+    } as unknown as CueAPIClient;
+    return { client, calls };
+  }
+
+  it("agents_list uses GET /v1/agents/roster (NOT /v1/agents)", async () => {
+    // Critical pinning: /v1/agents/roster is the new prompt-injection
+    // surface from PR #630. /v1/agents is the management list (paginated,
+    // tenancy metadata). Don't confuse them — different shapes.
+    const tool = findTool("cueapi_agents_list");
+    const { client, calls } = stubClient();
+    await tool.handler(client, {});
+    expect(calls).toHaveLength(1);
+    expect(calls[0].method).toBe("GET");
+    expect(calls[0].path).toBe("/v1/agents/roster");
+  });
+
+  it("agents_list takes no parameters (no pagination, no filters)", async () => {
+    // PR #630 spec: /v1/agents/roster is always-full list. Don't pass
+    // any query params or body. If a future client tries to filter, the
+    // server ignores it — pin the no-param contract.
+    const tool = findTool("cueapi_agents_list");
+    const { client, calls } = stubClient();
+    await tool.handler(client, {});
+    expect(calls[0].body).toBeUndefined();
+    expect(calls[0].query).toBeUndefined();
+  });
+
+  it("agents_describe uses GET /v1/agents/{name} with name in path", async () => {
+    const tool = findTool("cueapi_agents_describe");
+    const { client, calls } = stubClient();
+    await tool.handler(client, { name: "cue-mac-app" });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].method).toBe("GET");
+    expect(calls[0].path).toBe("/v1/agents/cue-mac-app");
+  });
+
+  it("agents_describe URL-encodes the name in the path", async () => {
+    // Slug-form addresses can include `@` for cross-tenant references
+    // (e.g. 'agt_pm@mike'). URL-encode so the @ doesn't trip path
+    // parsing.
+    const tool = findTool("cueapi_agents_describe");
+    const { client, calls } = stubClient();
+    await tool.handler(client, { name: "agt_pm@mike" });
+    expect(calls[0].path).toBe("/v1/agents/agt_pm%40mike");
+  });
+
+  it("agents_describe rejects empty name at the schema layer", async () => {
+    const tool = findTool("cueapi_agents_describe");
+    expect(() => tool.schema.parse({ name: "" })).toThrow();
+  });
+});

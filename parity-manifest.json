@@ -24,7 +24,9 @@
     "POST /v1/executions/{id}/claim": {"tool": "cueapi_claim_execution AND cueapi_claim_next_execution (the latter discovers exec_id via /claimable then claims by id; does NOT use the dedicated POST /v1/executions/claim route — see open_implementation_drift below)"},
     "POST /v1/executions/{id}/heartbeat": {"tool": "cueapi_execution_heartbeat"},
     "POST /v1/executions/{id}/outcome": {"tool": "cueapi_report_outcome"},
-    "POST /v1/messages": {"tool": "cueapi_send_message — minimum-viable scope: send only (PR #619 §17 BCC-light notify field included). Other messaging endpoints (GET/read/ack, agent identity, inbox/sent) remain in endpoints_missing for follow-up port."}
+    "POST /v1/messages": {"tool": "cueapi_send_message — minimum-viable scope: send only (PR #619 §17 BCC-light notify field included). Other messaging endpoints (GET/read/ack, agent identity, inbox/sent) remain in endpoints_missing for follow-up port."},
+    "GET /v1/agents/roster": {"tool": "cueapi_agents_list — Phase A of Agent Directory PRD (cueapi PR #630 — OPEN at port time; tool ships placeholder against the merged-PR spec). Display-optimized roster snapshot for prompt-injection at session boot. Always-full list, no pagination, drops opaque IDs."},
+    "GET /v1/agents/{name}": {"tool": "cueapi_agents_describe — fetches the management-surface AgentResponse (richer than roster entry: webhook_url, full metadata, canonical timestamps). Already existed server-side; just hadn't been wrapped."}
   },
 
   "endpoints_missing": {
@@ -50,8 +52,8 @@
     "POST /v1/alert-webhook-secret/regenerate": {"blocker": "Destructive — regenerate alert-webhook secret. Not yet wrapped."},
     "POST /v1/billing/checkout": {"blocker": "Hosted-only — wrap if/when hosted users need programmatic checkout from MCP."},
     "POST /v1/billing/portal": {"blocker": "Hosted-only."},
-    "Messaging primitive (residual: /v1/agents/* + /v1/messages/{id} get/read/ack)": {
-      "blocker": "POST /v1/messages now COVERED by cueapi_send_message (this PR). Residual gap: GET/PATCH/DELETE /v1/agents/{ref}, GET /v1/agents/{ref}/webhook-secret, POST /v1/agents/{ref}/webhook-secret/regenerate, GET /v1/agents/{ref}/inbox, GET /v1/agents/{ref}/sent, GET /v1/messages/{msg_id}, POST /v1/messages/{msg_id}/read, POST /v1/messages/{msg_id}/ack — agent identity + read-side lifecycle still not wrapped.",
+    "Messaging primitive (residual: /v1/messages/{id} get/read/ack + agent CRUD beyond list/describe)": {
+      "blocker": "POST /v1/messages COVERED by cueapi_send_message. GET /v1/agents/roster + GET /v1/agents/{name} COVERED by cueapi_agents_list + cueapi_agents_describe (this PR + cueapi #630). Residual gap: PATCH/DELETE /v1/agents/{ref}, POST /v1/agents/<name>/messages (sugar over /v1/messages — defer per cueapi #630 description), GET /v1/agents/{ref}/webhook-secret, POST /v1/agents/{ref}/webhook-secret/regenerate, GET /v1/agents/{ref}/inbox, GET /v1/agents/{ref}/sent, GET /v1/messages/{msg_id}, POST /v1/messages/{msg_id}/read, POST /v1/messages/{msg_id}/ack — agent CRUD + read-side message lifecycle still not wrapped.",
       "tracking": "Follow-up port: full message-lifecycle MCP wrapping (mirror cueapi-cli #29 surface). Backlog row pending."
     },
     "Agent shells (all of /v1/agents/{ref}/shells)": {
@@ -107,7 +109,8 @@
     "PR #281 (payload_override on /fire): PORTED — included in PR #11 series via cueapi_fire_cue acceptance of payload_override + merge_strategy.",
     "PR #589 (expose payload on GET /v1/executions): NOT YET PORTED — Backlog row 'Parity port: PR #589 → cueapi-mcp tools' priority=now, blocked.",
     "PR #590 (require_payload_override + required_payload_keys + cue.fire enforcement): NOT YET PORTED — Backlog row 'Parity port: PR #590 → cueapi-mcp tools' priority=now, blocked.",
-    "PR #619 (§17 BCC-light — `notify` field on POST /v1/messages): PORTED — this PR. New cueapi_send_message tool with full notify-field semantics (max-10 cap, omit-when-empty, server contract pinned: from + idempotency_key go via headers, not body). 8 new tests cover the 8 semantics rows from PR #619's pinning table. Minimum-viable port — broader messaging-primitive lifecycle (get/read/ack/inbox/sent + agent identity) tracked in endpoints_missing for follow-up."
+    "PR #619 (§17 BCC-light — `notify` field on POST /v1/messages): PORTED — this PR. New cueapi_send_message tool with full notify-field semantics (max-10 cap, omit-when-empty, server contract pinned: from + idempotency_key go via headers, not body). 8 new tests cover the 8 semantics rows from PR #619's pinning table. Minimum-viable port — broader messaging-primitive lifecycle (get/read/ack/inbox/sent + agent identity) tracked in endpoints_missing for follow-up.",
+    "PR #630 (Agent Directory PRD §Surface 1+5 — GET /v1/agents/roster + last_seen_at + ETag): PORTED placeholder — this PR. Adds cueapi_agents_list (wraps /roster) + cueapi_agents_describe (wraps existing /v1/agents/{name}); expanded cueapi_send_message description to point at agents_list as the discovery primitive. Placeholder against the merged-PR spec (PR #630 was OPEN at port time per CTO greenlight — cueapi self-described shape stable in PR description + diff). 5 new tests pin GET /roster path correctness (avoid confusion with management /v1/agents), no-param contract, and URL-encoding for slug-form names like `agt_pm@mike`. ETag/304 handling delegated to the underlying client; tools just pass through the response body. When PR #630 merges + cueapi-mcp publishes a new release, CueAPI Desktop's roster poller (Surface 5 follow-up) calls cueapi_agents_list every 5min to swap the stub for live."
   ],
 
   "notes": "First seeded 2026-05-04 by CC-cue-mac-app per CTO-PARITY-L2-MCP-ROUTE, mirroring the cueapi-python #24 + cueapi-cli #25 shape. Layer 2 of the 3-layer parity discipline (PR template + this manifest + Backlog rows). Schema may evolve based on what auditors actually need; the `endpoints_missing` and `tool_param_drift` sections are deliberately verbose because they ARE the audit checklist for catching MCP up to the hosted API."
