@@ -23,7 +23,8 @@
     "GET /v1/executions/claimable": {"tool": "cueapi_list_claimable_executions"},
     "POST /v1/executions/{id}/claim": {"tool": "cueapi_claim_execution AND cueapi_claim_next_execution (the latter discovers exec_id via /claimable then claims by id; does NOT use the dedicated POST /v1/executions/claim route — see open_implementation_drift below)"},
     "POST /v1/executions/{id}/heartbeat": {"tool": "cueapi_execution_heartbeat"},
-    "POST /v1/executions/{id}/outcome": {"tool": "cueapi_report_outcome"}
+    "POST /v1/executions/{id}/outcome": {"tool": "cueapi_report_outcome"},
+    "POST /v1/messages": {"tool": "cueapi_send_message — minimum-viable scope: send only (PR #619 §17 BCC-light notify field included). Other messaging endpoints (GET/read/ack, agent identity, inbox/sent) remain in endpoints_missing for follow-up port."}
   },
 
   "endpoints_missing": {
@@ -49,9 +50,9 @@
     "POST /v1/alert-webhook-secret/regenerate": {"blocker": "Destructive — regenerate alert-webhook secret. Not yet wrapped."},
     "POST /v1/billing/checkout": {"blocker": "Hosted-only — wrap if/when hosted users need programmatic checkout from MCP."},
     "POST /v1/billing/portal": {"blocker": "Hosted-only."},
-    "Messaging primitive (all of /v1/agents, /v1/messages)": {
-      "blocker": "Phase 12.1.5 messaging primitive is on prod but not yet exposed in MCP. Per current cueapi-core router list: GET/PATCH/DELETE /v1/agents/{ref}, GET /v1/agents/{ref}/webhook-secret, POST /v1/agents/{ref}/webhook-secret/regenerate, GET /v1/agents/{ref}/inbox, GET /v1/agents/{ref}/sent, GET /v1/messages/{msg_id}, POST /v1/messages/{msg_id}/read, POST /v1/messages/{msg_id}/ack. Significant new surface — agent identity, send_message, inbox poll, idempotency-keyed sends, reply threading.",
-      "tracking": "Major MCP extension. Should land before push delivery (v1.5) goes wide. Same shape as cueapi-python #24's listed gap."
+    "Messaging primitive (residual: /v1/agents/* + /v1/messages/{id} get/read/ack)": {
+      "blocker": "POST /v1/messages now COVERED by cueapi_send_message (this PR). Residual gap: GET/PATCH/DELETE /v1/agents/{ref}, GET /v1/agents/{ref}/webhook-secret, POST /v1/agents/{ref}/webhook-secret/regenerate, GET /v1/agents/{ref}/inbox, GET /v1/agents/{ref}/sent, GET /v1/messages/{msg_id}, POST /v1/messages/{msg_id}/read, POST /v1/messages/{msg_id}/ack — agent identity + read-side lifecycle still not wrapped.",
+      "tracking": "Follow-up port: full message-lifecycle MCP wrapping (mirror cueapi-cli #29 surface). Backlog row pending."
     },
     "Agent shells (all of /v1/agents/{ref}/shells)": {
       "blocker": "Phase 18 agent-shells API: POST /v1/agents/{ref}/shells (register), GET /v1/agents/{ref}/shells (list), DELETE /v1/agents/{ref}/shells/{shell_id} (deregister), POST /v1/agents/{ref}/shells/{shell_id}/heartbeat (per-shell heartbeat). Distinct from per-execution heartbeat — this is shell-level liveness for the inbox-poll subshell pattern. Not yet wrapped in MCP."
@@ -105,7 +106,8 @@
     "Phase 18 Gap 3a (execution-lifecycle endpoints — claim, claim-next, heartbeat, outcome): PORTED — PR #11 (Mike-authored, merged 2026-05-02). Tools cueapi_claim_execution, cueapi_claim_next_execution, cueapi_execution_heartbeat, cueapi_report_outcome.",
     "PR #281 (payload_override on /fire): PORTED — included in PR #11 series via cueapi_fire_cue acceptance of payload_override + merge_strategy.",
     "PR #589 (expose payload on GET /v1/executions): PORTED — this PR (description-only, since the existing get_execution + list_executions tools are passthrough; the new 'payload' field surfaces automatically). cueapi_get_execution and cueapi_list_executions descriptions updated to call out the field.",
-    "PR #590 (require_payload_override + required_payload_keys + cue.fire enforcement): PORTED — this PR. Added two new optional fields to cueapi_create_cue + cueapi_update_cue schemas + handler passthroughs. Updated cueapi_fire_cue description to surface the 3 new error codes (payload_override_required, missing_required_payload_keys, inconsistent_message_instruction). 7 new tests cover the new field passthrough and false/empty edge cases."
+    "PR #590 (require_payload_override + required_payload_keys + cue.fire enforcement): PORTED — this PR. Added two new optional fields to cueapi_create_cue + cueapi_update_cue schemas + handler passthroughs. Updated cueapi_fire_cue description to surface the 3 new error codes (payload_override_required, missing_required_payload_keys, inconsistent_message_instruction). 7 new tests cover the new field passthrough and false/empty edge cases.",
+    "PR #619 (§17 BCC-light — `notify` field on POST /v1/messages): PORTED — this PR. New cueapi_send_message tool with full notify-field semantics (max-10 cap, omit-when-empty, server contract pinned: from + idempotency_key go via headers, not body). 8 new tests cover the 8 semantics rows from PR #619's pinning table. Minimum-viable port — broader messaging-primitive lifecycle (get/read/ack/inbox/sent + agent identity) tracked in endpoints_missing for follow-up."
   ],
 
   "notes": "First seeded 2026-05-04 by CC-cue-mac-app per CTO-PARITY-L2-MCP-ROUTE, mirroring the cueapi-python #24 + cueapi-cli #25 shape. Layer 2 of the 3-layer parity discipline (PR template + this manifest + Backlog rows). Schema may evolve based on what auditors actually need; the `endpoints_missing` and `tool_param_drift` sections are deliberately verbose because they ARE the audit checklist for catching MCP up to the hosted API."
