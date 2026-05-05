@@ -181,6 +181,63 @@ const reportOutcomeSchema = z.object({
     .describe("Short human summary of what the agent did"),
 });
 
+// Messaging primitive — Phase 12.1.5. Minimum-viable scope: send_message
+// only, with the §17 BCC-light notify field (PR #619). Full messaging
+// lifecycle (get/read/ack/inbox/sent) tracked separately in
+// `endpoints_missing` for a follow-up port.
+const sendMessageSchema = z.object({
+  to: z
+    .string()
+    .describe(
+      "Recipient agent address — opaque ID 'agt_xxx' or slug-form 'agent_slug@user_slug'. NOT a cue_id; the messaging primitive addresses agents directly, not their inbound cues."
+    ),
+  from: z
+    .string()
+    .describe(
+      "Sender agent address (same opaque-or-slug format as `to`). Sent as the X-Cueapi-From-Agent request header (the server contract — sender is NOT in the body). Required by this MCP wrapper."
+    ),
+  subject: z
+    .string()
+    .min(1)
+    .max(200)
+    .describe("Short subject line (max 200 chars)."),
+  body: z
+    .string()
+    .min(1)
+    .max(32768)
+    .describe("Message body (max 32 KB; for longer content put it in a Dock workspace and link)."),
+  priority: z
+    .number()
+    .int()
+    .min(1)
+    .max(5)
+    .optional()
+    .describe(
+      "Message priority 1-5 (server-side scaled by tenant plan; values outside 1-5 are 422'd by the server)."
+    ),
+  expects_reply: z
+    .boolean()
+    .optional()
+    .describe("Hint to the recipient that a reply is expected (omit when false; same omit-when-default pattern as cueapi-cli)."),
+  reply_to: z
+    .string()
+    .optional()
+    .describe("Message ID this is a reply to. Server uses it to thread (sets thread_id from the original)."),
+  notify: z
+    .array(z.string())
+    .max(10)
+    .optional()
+    .describe(
+      "§17 BCC-light (PR #619): list of agent addresses to receive a stripped notification copy alongside the main delivery. Each gets a separate Message row with body=`<from> → <to>: <subject>`, priority=3, metadata.notification_for=<main_id>, sharing the main message's thread_id so bcc'd recipients can reply into the thread. Self-bcc (notify includes `to`) silently de-duped. Duplicates within list de-duped. Cap: 10 entries (11+ → 422). Notifications skip the monthly quota. Response includes `bcc_emitted: [msg_id, ...]` (only on create — empty on subsequent GETs and idempotency dedup-hits)."
+    ),
+  idempotency_key: z
+    .string()
+    .optional()
+    .describe(
+      "Server dedups same-key sends from the same sender; dedup-hit returns the original message_id and bcc_emitted=[] (no re-emit of notifications). Recommended for retry-safe sends."
+    ),
+});
+
 // ---------- tools ----------
 
 export const tools: ToolDefinition[] = [
@@ -410,6 +467,37 @@ export const tools: ToolDefinition[] = [
         "POST",
         `/v1/executions/${encodeURIComponent(args.execution_id)}/outcome`,
         body
+      );
+    },
+  },
+  {
+    name: "cueapi_send_message",
+    description:
+      "Send a direct agent-to-agent message via the Phase 12.1.5 messaging primitive. Use the `notify` field for §17 BCC-light fan-out (PR #619): each agent in `notify` gets a stripped notification copy alongside the main delivery, threaded with the main message so they can reply into the conversation. Sender (`from`) goes via the X-Cueapi-From-Agent request header (server contract — NOT in body). Useful for agent-to-agent coordination where the cue/execution model is heavier than needed (no scheduling, no handler binding, no reply-cue indirection).",
+    schema: sendMessageSchema,
+    handler: async (client, args) => {
+      const body: Record<string, unknown> = {
+        to: args.to,
+        subject: args.subject,
+        body: args.body,
+      };
+      if (args.priority !== undefined) body.priority = args.priority;
+      if (args.expects_reply) body.expects_reply = args.expects_reply;
+      if (args.reply_to) body.reply_to = args.reply_to;
+      if (args.notify && args.notify.length > 0) body.notify = args.notify;
+      const extraHeaders: Record<string, string> = {
+        "X-Cueapi-From-Agent": args.from,
+      };
+      if (args.idempotency_key) {
+        extraHeaders["Idempotency-Key"] = args.idempotency_key;
+      }
+      return client.request(
+        "POST",
+        "/v1/messages",
+        body,
+        undefined,
+        undefined,
+        extraHeaders
       );
     },
   },
