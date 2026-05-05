@@ -258,6 +258,12 @@ const sendMessageSchema = z.object({
     .describe(
       "§17 BCC-light (PR #619): list of agent addresses to receive a stripped notification copy alongside the main delivery. Each gets a separate Message row with body=`<from> → <to>: <subject>`, priority=3, metadata.notification_for=<main_id>, sharing the main message's thread_id so bcc'd recipients can reply into the thread. Self-bcc (notify includes `to`) silently de-duped. Duplicates within list de-duped. Cap: 10 entries (11+ → 422). Notifications skip the monthly quota. Response includes `bcc_emitted: [msg_id, ...]` (only on create — empty on subsequent GETs and idempotency dedup-hits)."
     ),
+  mode: z
+    .enum(["live", "bg", "inbox", "webhook", "auto"])
+    .optional()
+    .describe(
+      "Surface 6 v2 delivery_mode hint. `live` = recipient's attached Live session (in-context, immediate). `bg` = spawn a fresh background session for the recipient agent. `inbox` = leave the message in the recipient's inbox for them to pull. `webhook` = POST to the recipient's configured webhook. `auto` (default — also the wire-format when omitted) = server picks the best supported mode based on the recipient's `delivery_capabilities`. The server may downgrade — e.g. `mode: live` falls back to `inbox` when the recipient has no live session attached. The chosen mode is reflected in the response's `effective_delivery_mode` field, which the caller can compare against `mode` to detect downgrades. This MCP tool omits the field on the wire when set to `auto` (or omitted) since absent === auto on the server."
+    ),
   idempotency_key: z
     .string()
     .optional()
@@ -513,7 +519,7 @@ export const tools: ToolDefinition[] = [
   {
     name: "cueapi_send_message",
     description:
-      "Send a direct agent-to-agent message via the Phase 12.1.5 messaging primitive. Use the `notify` field for §17 BCC-light fan-out (PR #619): each agent in `notify` gets a stripped notification copy alongside the main delivery, threaded with the main message so they can reply into the conversation. Sender (`from`) goes via the X-Cueapi-From-Agent request header (server contract — NOT in body). Useful for agent-to-agent coordination where the cue/execution model is heavier than needed (no scheduling, no handler binding, no reply-cue indirection).",
+      "Send a direct agent-to-agent message via the Phase 12.1.5 messaging primitive. Use the `notify` field for §17 BCC-light fan-out (PR #619): each agent in `notify` gets a stripped notification copy alongside the main delivery, threaded with the main message so they can reply into the conversation. Sender (`from`) goes via the X-Cueapi-From-Agent request header (server contract — NOT in body). Use `mode` (Surface 6 v2 delivery_mode) to hint how the message should be delivered: `live` for immediate attached-session delivery, `bg` for a fresh background session, `inbox` for pull, `webhook` for HTTP POST to the recipient's webhook, or `auto` (default) to let the server pick based on `delivery_capabilities`. The response includes `effective_delivery_mode` so the caller can detect server-side downgrades. Useful for agent-to-agent coordination where the cue/execution model is heavier than needed (no scheduling, no handler binding, no reply-cue indirection).",
     schema: sendMessageSchema,
     handler: async (client, args) => {
       const body: Record<string, unknown> = {
@@ -525,6 +531,11 @@ export const tools: ToolDefinition[] = [
       if (args.expects_reply) body.expects_reply = args.expects_reply;
       if (args.reply_to) body.reply_to = args.reply_to;
       if (args.notify && args.notify.length > 0) body.notify = args.notify;
+      // Default-omit: only include `delivery_mode` when the caller opts away
+      // from `auto`. Server treats absent === auto, so this keeps the wire
+      // format identical to pre-Surface-6 senders and avoids payload noise
+      // on the common path.
+      if (args.mode && args.mode !== "auto") body.delivery_mode = args.mode;
       const extraHeaders: Record<string, string> = {
         "X-Cueapi-From-Agent": args.from,
       };

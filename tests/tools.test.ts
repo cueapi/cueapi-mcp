@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
+import { z } from "zod";
 import { tools } from "../src/tools.js";
 import type { CueAPIClient } from "../src/client.js";
 
@@ -1148,5 +1149,81 @@ describe("cueapi_send_message — HTTP contract (PR #619 BCC-light)", () => {
       body: "x".repeat(32768),
     });
     expect(parsed.body.length).toBe(32768);
+  });
+
+  // Surface 6 v2 — delivery_mode
+  describe("mode parameter (Surface 6 v2 delivery_mode)", () => {
+    it("default (mode omitted) does not include delivery_mode in body", async () => {
+      // Server treats absent === auto, so the wire format is identical to
+      // pre-Surface-6 senders. Avoids payload noise on the common path and
+      // keeps backward compat in the response contract.
+      const tool = findTool("cueapi_send_message");
+      const { client, calls } = stubClient();
+      await tool.handler(client, {
+        to: "agt_bob",
+        from: "agt_alice",
+        subject: "x",
+        body: "y",
+      });
+      expect(calls[0].body).not.toHaveProperty("delivery_mode");
+    });
+
+    it("explicit mode='auto' is also omitted (same wire-format as default)", async () => {
+      const tool = findTool("cueapi_send_message");
+      const { client, calls } = stubClient();
+      await tool.handler(client, {
+        to: "agt_bob",
+        from: "agt_alice",
+        subject: "x",
+        body: "y",
+        mode: "auto",
+      });
+      expect(calls[0].body).not.toHaveProperty("delivery_mode");
+    });
+
+    it.each(["live", "bg", "inbox", "webhook"] as const)(
+      "mode='%s' is passed through as body.delivery_mode",
+      async (mode) => {
+        const tool = findTool("cueapi_send_message");
+        const { client, calls } = stubClient();
+        await tool.handler(client, {
+          to: "agt_bob",
+          from: "agt_alice",
+          subject: "x",
+          body: "y",
+          mode,
+        });
+        expect(calls[0].body).toMatchObject({ delivery_mode: mode });
+      }
+    );
+
+    it("invalid mode value rejected client-side via Zod enum", async () => {
+      // Zod enum gates the value before it can hit the wire; surfaces the
+      // typo at MCP-host validation time instead of as a 422 from the server.
+      const tool = findTool("cueapi_send_message");
+      expect(() =>
+        tool.schema.parse({
+          to: "agt_bob",
+          from: "agt_alice",
+          subject: "x",
+          body: "y",
+          mode: "bogus",
+        })
+      ).toThrow();
+    });
+
+    it("schema documents all 5 modes in the description", async () => {
+      // The description is what the LLM sees when picking a mode value.
+      // Pin the 5 documented values so a refactor that drops one (or sneaks
+      // in a 6th) breaks loudly.
+      const tool = findTool("cueapi_send_message");
+      const shape = (tool.schema as z.ZodObject<z.ZodRawShape>).shape;
+      const modeField = shape.mode;
+      const description = modeField?.description ?? "";
+      for (const m of ["live", "bg", "inbox", "webhook", "auto"]) {
+        expect(description).toContain(m);
+      }
+      expect(description).toContain("effective_delivery_mode");
+    });
   });
 });
