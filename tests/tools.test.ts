@@ -921,3 +921,232 @@ describe("cueapi_send_message — HTTP contract (PR #619 BCC-light)", () => {
     expect(parsed.body.length).toBe(32768);
   });
 });
+
+describe("cueapi_send_message — HTTP contract (PR #619 BCC-light)", () => {
+  // POST /v1/messages with sender via X-Cueapi-From-Agent HEADER (not body).
+  // §17 BCC-light: the optional `notify: [agent_ref, ...]` field emits a
+  // stripped notification copy to each listed agent alongside the main
+  // delivery. These tests pin the body shape, header placement, and notify
+  // semantics so a refactor putting `from` in the body or dropping the
+  // header would break the test loudly. Mirrors cueapi-cli #29's pinning.
+
+  function findTool(name: string) {
+    const t = tools.find((x) => x.name === name);
+    if (!t) throw new Error(`tool ${name} missing`);
+    return t;
+  }
+
+  function stubClient() {
+    const calls: Array<{
+      method: string;
+      path: string;
+      body?: unknown;
+      query?: unknown;
+      apiKey?: string;
+      extraHeaders?: Record<string, string>;
+    }> = [];
+    const client = {
+      request: vi.fn(
+        async (
+          method: string,
+          path: string,
+          body?: unknown,
+          query?: unknown,
+          apiKey?: string,
+          extraHeaders?: Record<string, string>
+        ) => {
+          calls.push({ method, path, body, query, apiKey, extraHeaders });
+          return {
+            id: "msg_test",
+            thread_id: "msg_test",
+            status: "delivered",
+            bcc_emitted: [],
+          };
+        }
+      ),
+    } as unknown as CueAPIClient;
+    return { client, calls };
+  }
+
+  it("sends to POST /v1/messages with required fields in body", async () => {
+    const tool = findTool("cueapi_send_message");
+    const { client, calls } = stubClient();
+    await tool.handler(client, {
+      to: "agt_bob",
+      from: "agt_alice",
+      subject: "Hello",
+      body: "Test message",
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].method).toBe("POST");
+    expect(calls[0].path).toBe("/v1/messages");
+    expect(calls[0].body).toEqual({
+      to: "agt_bob",
+      subject: "Hello",
+      body: "Test message",
+    });
+  });
+
+  it("sends `from` via X-Cueapi-From-Agent HEADER, NOT in the body", async () => {
+    // Server contract per app/routers/messages.py reads sender from
+    // Header(default=None, alias='X-Cueapi-From-Agent'). Pinned here
+    // so a refactor putting `from` in the body would break loudly
+    // at unit-test time instead of silently at integration-test time.
+    const tool = findTool("cueapi_send_message");
+    const { client, calls } = stubClient();
+    await tool.handler(client, {
+      to: "agt_bob",
+      from: "agt_alice",
+      subject: "Hello",
+      body: "Test",
+    });
+
+    expect(calls[0].extraHeaders).toEqual({
+      "X-Cueapi-From-Agent": "agt_alice",
+    });
+    expect(calls[0].body).not.toHaveProperty("from");
+  });
+
+  // PR #619 — §17 BCC-light coverage. Each test below pins one of the
+  // notify-field semantics rows from the PR description.
+  it("notify=[a,b,c] passes through to body verbatim", async () => {
+    const tool = findTool("cueapi_send_message");
+    const { client, calls } = stubClient();
+    await tool.handler(client, {
+      to: "agt_bob",
+      from: "agt_alice",
+      subject: "Spec review",
+      body: "...",
+      notify: ["agt_pm@mike", "agt_qa@mike"],
+    });
+    expect(calls[0].body).toMatchObject({
+      to: "agt_bob",
+      subject: "Spec review",
+      body: "...",
+      notify: ["agt_pm@mike", "agt_qa@mike"],
+    });
+  });
+
+  it("notify=[] is omitted (server treats no field === empty list)", async () => {
+    // The handler intentionally only includes `notify` when the array is
+    // non-empty. Omitting matches the server's "no field" semantics
+    // (no notification sent) — and avoids round-tripping an empty array
+    // that future server code might mis-interpret.
+    const tool = findTool("cueapi_send_message");
+    const { client, calls } = stubClient();
+    await tool.handler(client, {
+      to: "agt_bob",
+      from: "agt_alice",
+      subject: "x",
+      body: "y",
+      notify: [],
+    });
+    expect(calls[0].body).not.toHaveProperty("notify");
+  });
+
+  it("notify with 11+ entries — schema rejects client-side (Zod max 10)", async () => {
+    // Server caps at 10 entries (HTTP 422 schema-level reject). This MCP
+    // tool's Zod schema mirrors the cap so the failure surfaces at the
+    // MCP host (caller) before any HTTP round-trip — clean error UX.
+    const tool = findTool("cueapi_send_message");
+    expect(() =>
+      tool.schema.parse({
+        to: "agt_bob",
+        from: "agt_alice",
+        subject: "x",
+        body: "y",
+        notify: Array(11).fill("agt_x"),
+      })
+    ).toThrow();
+  });
+
+  it("idempotency_key goes via Idempotency-Key HEADER, not body", async () => {
+    // Same server contract as `from` — header, not body.
+    const tool = findTool("cueapi_send_message");
+    const { client, calls } = stubClient();
+    await tool.handler(client, {
+      to: "agt_bob",
+      from: "agt_alice",
+      subject: "x",
+      body: "y",
+      idempotency_key: "user-action-123",
+    });
+
+    expect(calls[0].extraHeaders).toEqual({
+      "X-Cueapi-From-Agent": "agt_alice",
+      "Idempotency-Key": "user-action-123",
+    });
+    expect(calls[0].body).not.toHaveProperty("idempotency_key");
+  });
+
+  it("expects_reply=true passes through; false omitted (omit-when-default)", async () => {
+    // Same omit-when-default pattern cueapi-cli uses for boolean flags
+    // that default to false (--include-deleted, --has-evidence,
+    // --expects-reply). Pin the omit so a refactor that always sends
+    // the field can't accidentally start round-tripping false.
+    const tool = findTool("cueapi_send_message");
+    const { client: c1, calls: calls1 } = stubClient();
+    await tool.handler(c1, {
+      to: "agt_bob",
+      from: "agt_alice",
+      subject: "x",
+      body: "y",
+      expects_reply: true,
+    });
+    expect(calls1[0].body).toMatchObject({ expects_reply: true });
+
+    const { client: c2, calls: calls2 } = stubClient();
+    await tool.handler(c2, {
+      to: "agt_bob",
+      from: "agt_alice",
+      subject: "x",
+      body: "y",
+      expects_reply: false,
+    });
+    expect(calls2[0].body).not.toHaveProperty("expects_reply");
+  });
+
+  it("priority outside 1-5 is rejected client-side via Zod", async () => {
+    const tool = findTool("cueapi_send_message");
+    expect(() =>
+      tool.schema.parse({
+        to: "agt_bob",
+        from: "agt_alice",
+        subject: "x",
+        body: "y",
+        priority: 0,
+      })
+    ).toThrow();
+    expect(() =>
+      tool.schema.parse({
+        to: "agt_bob",
+        from: "agt_alice",
+        subject: "x",
+        body: "y",
+        priority: 6,
+      })
+    ).toThrow();
+  });
+
+  it("body cap is 32KB at the schema layer", async () => {
+    const tool = findTool("cueapi_send_message");
+    // 32KB + 1 char → reject
+    expect(() =>
+      tool.schema.parse({
+        to: "agt_bob",
+        from: "agt_alice",
+        subject: "x",
+        body: "x".repeat(32769),
+      })
+    ).toThrow();
+    // exactly 32KB → accept
+    const parsed = tool.schema.parse({
+      to: "agt_bob",
+      from: "agt_alice",
+      subject: "x",
+      body: "x".repeat(32768),
+    });
+    expect(parsed.body.length).toBe(32768);
+  });
+});
