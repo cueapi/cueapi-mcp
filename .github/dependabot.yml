@@ -17,6 +17,32 @@ updates:
         update-types:
           - "minor"
           - "patch"
+    # Major-bump ignore list. Each entry blocks Dependabot from
+    # opening a major-version-bump PR for the named package — minor
+    # + patch updates still flow through (and group via the rule
+    # above). Add packages here when a major bump requires
+    # deliberate, non-trivial migration work that's not worth the
+    # CI-fail churn of repeatedly auto-opened PRs.
+    #
+    # When a package is ready for the major bump, remove the entry
+    # here and Dependabot will re-open the PR on its next scheduled
+    # run; do the migration in a dedicated commit that lands the
+    # bump alongside the type-system / API adaptations.
+    ignore:
+      # zod v4 (released 2025) reshapes the type hierarchy
+      # (``ZodObject`` no longer assignable to
+      # ``ZodType<any, ZodTypeDef, any>``), tightens output types
+      # from ``Record<string, primitive>`` to
+      # ``Record<string, unknown>``, and changes signature
+      # requirements on several methods. PR #17
+      # (chore(deps): bump zod 3.25.76 → 4.4.3) surfaced ~20 TS
+      # errors across src/tools.ts + http-entry.ts + stdio-entry.ts.
+      # Migration is real work that needs to land alongside
+      # @modelcontextprotocol/sdk's zod-4 readiness +
+      # zod-to-json-schema's zod-4 compat. Pinned to v3 majors
+      # until that work is deliberately scheduled.
+      - dependency-name: "zod"
+        update-types: ["version-update:semver-major"]
 
   # GitHub Actions — workflow dependency updates (pinned by SHA)
   - package-ecosystem: "github-actions"
