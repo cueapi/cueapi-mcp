@@ -73,27 +73,27 @@
       "covered_response_fields": [
         "id", "cue_id", "scheduled_for", "status", "http_status", "attempts",
         "error_message", "started_at", "delivered_at", "last_attempt_at",
-        "outcome", "outcome_state", "triggered_by", "created_at", "updated_at"
+        "outcome", "outcome_state", "triggered_by", "created_at", "updated_at",
+        "payload (PR #589 — effective payload, payload_override if set on the fire else parent cue's payload)"
       ],
       "missing_response_fields": [
-        "payload (PR #589, just shipped — coverage gap to close)",
         "evidence_external_id, evidence_result_url, evidence_result_type, evidence_summary, evidence_validation_state, evidence_assertions",
         "claimed_by_worker, claimed_at, last_heartbeat_at",
         "chain_parent_id, chain_depth"
       ],
-      "tracking": "Backlog row 'Parity port: PR #589 → cueapi-mcp tools' (priority=now, blocked on PR #589 merge + cueapi-python release)."
+      "tracking": "Coverage closed via this PR — tool description updated to surface 'payload' field; passthrough handler already returns it. Remaining response-field gaps (evidence, claim metadata, chain) tracked as separate follow-up."
     },
     "cueapi_create_cue / cueapi_update_cue": {
       "covered_request_fields": [
         "name", "description", "schedule", "callback_url", "method",
-        "timezone", "default_payload", "task_name", "platform"
+        "timezone", "default_payload", "task_name", "platform",
+        "require_payload_override, required_payload_keys (PR #590 — server-side enforcement opt-in)"
       ],
       "missing_request_fields": [
         "delivery, alerts, catch_up, verification, on_success_fire (cue chaining)",
-        "require_payload_override, required_payload_keys (PR #590 — coverage gap)",
         "stats response shape"
       ],
-      "tracking": "Backlog row 'Parity port: PR #590 → cueapi-mcp tools' (priority=now, blocked on PR #590 merge + cueapi-python release)."
+      "tracking": "PR #590 fields ported via this PR (require_payload_override + required_payload_keys both schemas + handlers + 7 new tests). Remaining cue-chaining fields tracked as separate follow-up."
     },
     "cueapi_fire_cue": {
       "covered_request_fields": ["cue_id", "payload_override", "merge_strategy"],
@@ -104,8 +104,8 @@
   "ported_pr_history": [
     "Phase 18 Gap 3a (execution-lifecycle endpoints — claim, claim-next, heartbeat, outcome): PORTED — PR #11 (Mike-authored, merged 2026-05-02). Tools cueapi_claim_execution, cueapi_claim_next_execution, cueapi_execution_heartbeat, cueapi_report_outcome.",
     "PR #281 (payload_override on /fire): PORTED — included in PR #11 series via cueapi_fire_cue acceptance of payload_override + merge_strategy.",
-    "PR #589 (expose payload on GET /v1/executions): NOT YET PORTED — Backlog row 'Parity port: PR #589 → cueapi-mcp tools' priority=now, blocked.",
-    "PR #590 (require_payload_override + required_payload_keys + cue.fire enforcement): NOT YET PORTED — Backlog row 'Parity port: PR #590 → cueapi-mcp tools' priority=now, blocked."
+    "PR #589 (expose payload on GET /v1/executions): PORTED — this PR (description-only, since the existing get_execution + list_executions tools are passthrough; the new 'payload' field surfaces automatically). cueapi_get_execution and cueapi_list_executions descriptions updated to call out the field.",
+    "PR #590 (require_payload_override + required_payload_keys + cue.fire enforcement): PORTED — this PR. Added two new optional fields to cueapi_create_cue + cueapi_update_cue schemas + handler passthroughs. Updated cueapi_fire_cue description to surface the 3 new error codes (payload_override_required, missing_required_payload_keys, inconsistent_message_instruction). 7 new tests cover the new field passthrough and false/empty edge cases."
   ],
 
   "notes": "First seeded 2026-05-04 by CC-cue-mac-app per CTO-PARITY-L2-MCP-ROUTE, mirroring the cueapi-python #24 + cueapi-cli #25 shape. Layer 2 of the 3-layer parity discipline (PR template + this manifest + Backlog rows). Schema may evolve based on what auditors actually need; the `endpoints_missing` and `tool_param_drift` sections are deliberately verbose because they ARE the audit checklist for catching MCP up to the hosted API."
