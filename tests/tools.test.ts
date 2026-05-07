@@ -119,12 +119,28 @@ describe("cueapi_fire_cue — HTTP contract", () => {
   }
 
   function stubClient() {
-    const calls: Array<{ method: string; path: string; body?: unknown; query?: unknown }> = [];
+    const calls: Array<{
+      method: string;
+      path: string;
+      body?: unknown;
+      query?: unknown;
+      apiKey?: unknown;
+      headers?: Record<string, string>;
+    }> = [];
     const client = {
-      request: vi.fn(async (method: string, path: string, body?: unknown, query?: unknown) => {
-        calls.push({ method, path, body, query });
-        return { execution_id: "exec_test", status: "queued" };
-      }),
+      request: vi.fn(
+        async (
+          method: string,
+          path: string,
+          body?: unknown,
+          query?: unknown,
+          apiKey?: unknown,
+          headers?: Record<string, string>
+        ) => {
+          calls.push({ method, path, body, query, apiKey, headers });
+          return { execution_id: "exec_test", status: "queued" };
+        }
+      ),
     } as unknown as CueAPIClient;
     return { client, calls };
   }
@@ -193,6 +209,74 @@ describe("cueapi_fire_cue — HTTP contract", () => {
     const { client, calls } = stubClient();
     await tool.handler(client, { cue_id: "cue/with/slashes" });
     expect(calls[0].path).toBe("/v1/cues/cue%2Fwith%2Fslashes/fire");
+  });
+
+  // send_at + exit_criteria + idempotency_key parity (cueapi #618 / #632 / #683)
+
+  it("passes send_at as ISO string into the body (cueapi #618 parity)", async () => {
+    const tool = findTool("cueapi_fire_cue");
+    const { client, calls } = stubClient();
+    await tool.handler(client, {
+      cue_id: "cue_abc123",
+      send_at: "2030-01-01T12:00:00Z",
+    });
+
+    expect(calls[0].body).toEqual({ send_at: "2030-01-01T12:00:00Z" });
+  });
+
+  it("passes exit_criteria into the body (cueapi #632 parity)", async () => {
+    const tool = findTool("cueapi_fire_cue");
+    const { client, calls } = stubClient();
+    const ec = { type: "outcome_state", value: "verified_success" };
+    await tool.handler(client, {
+      cue_id: "cue_abc123",
+      exit_criteria: ec,
+    });
+
+    expect(calls[0].body).toEqual({ exit_criteria: ec });
+  });
+
+  it("idempotency_key flows as Idempotency-Key HEADER, not a body field (cueapi #683 parity)", async () => {
+    // Pin: server's FireRequest is extra="forbid" — sending
+    // `idempotency_key` in the body would 400. The handler MUST move
+    // it to the Idempotency-Key header.
+    const tool = findTool("cueapi_fire_cue");
+    const { client, calls } = stubClient();
+    await tool.handler(client, {
+      cue_id: "cue_abc123",
+      idempotency_key: "ci-run-456",
+    });
+
+    expect(calls[0].body).toEqual({});
+    expect(calls[0].body).not.toHaveProperty("idempotency_key");
+    expect(calls[0].headers).toEqual({ "Idempotency-Key": "ci-run-456" });
+  });
+
+  it("omits Idempotency-Key header when idempotency_key is unset", async () => {
+    const tool = findTool("cueapi_fire_cue");
+    const { client, calls } = stubClient();
+    await tool.handler(client, { cue_id: "cue_abc123" });
+
+    expect(calls[0].headers).toBeUndefined();
+  });
+
+  it("send_at + exit_criteria + idempotency_key together — body has the two, header has the key", async () => {
+    const tool = findTool("cueapi_fire_cue");
+    const { client, calls } = stubClient();
+    await tool.handler(client, {
+      cue_id: "cue_abc123",
+      payload_override: { task: "x" },
+      send_at: "2030-01-01T12:00:00Z",
+      exit_criteria: { type: "manual" },
+      idempotency_key: "abc",
+    });
+
+    expect(calls[0].body).toEqual({
+      payload_override: { task: "x" },
+      send_at: "2030-01-01T12:00:00Z",
+      exit_criteria: { type: "manual" },
+    });
+    expect(calls[0].headers).toEqual({ "Idempotency-Key": "abc" });
   });
 });
 

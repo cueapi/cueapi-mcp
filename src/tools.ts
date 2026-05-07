@@ -146,6 +146,25 @@ const fireCueSchema = z.object({
     .describe(
       "How payload_override combines with the cue's stored payload. 'merge' (default) = shallow-merge, override wins on key collisions. 'replace' = use override as the final payload, ignore cue.payload."
     ),
+  send_at: z
+    .string()
+    .optional()
+    .describe(
+      "Optional ISO 8601 timestamp to delay this fire (cueapi #618). When omitted, the execution is scheduled immediately. When provided, the server schedules the execution for this timestamp instead. Per-fire scheduling — does NOT mutate the cue's recurring schedule."
+    ),
+  exit_criteria: z
+    .record(z.unknown())
+    .optional()
+    .describe(
+      "Optional per-fire termination conditions (cueapi #632). Dict shape mirrors the API contract; keys vary by criterion type. Use to override the cue's default exit semantics for this single fire."
+    ),
+  idempotency_key: z
+    .string()
+    .max(255)
+    .optional()
+    .describe(
+      "Optional Idempotency-Key header (cueapi #683, ≤255 chars). Same key + same body within 24h returns the existing execution with HTTP 200 instead of creating a new fire. Same key + different body returns 409 idempotency_key_conflict. Sent as a header, NOT a body field."
+    ),
 });
 
 const claimableExecutionsSchema = z.object({
@@ -321,10 +340,20 @@ export const tools: ToolDefinition[] = [
       const body: Record<string, unknown> = {};
       if (args.payload_override) body.payload_override = args.payload_override;
       if (args.merge_strategy) body.merge_strategy = args.merge_strategy;
+      if (args.send_at) body.send_at = args.send_at;
+      if (args.exit_criteria) body.exit_criteria = args.exit_criteria;
+      // idempotency_key flows as a header, NOT a body field — server's
+      // FireRequest is extra="forbid" and would 400 on `{"idempotency_key": ...}`.
+      const extraHeaders: Record<string, string> | undefined = args.idempotency_key
+        ? { "Idempotency-Key": args.idempotency_key }
+        : undefined;
       return client.request(
         "POST",
         `/v1/cues/${encodeURIComponent(args.cue_id)}/fire`,
-        body
+        body,
+        undefined, // no query params
+        undefined, // no per-call apiKey override (use default)
+        extraHeaders
       );
     },
   },
