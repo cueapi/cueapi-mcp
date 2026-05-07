@@ -224,10 +224,14 @@ describe("cueapi_fire_cue — HTTP contract", () => {
     expect(calls[0].body).toEqual({ send_at: "2030-01-01T12:00:00Z" });
   });
 
-  it("passes exit_criteria into the body (cueapi #632 parity)", async () => {
+  it("passes exit_criteria as a string array into the body (cueapi #632 parity)", async () => {
+    // Server's FireRequest.exit_criteria is Optional[List[str]] — a
+    // list of required-assertion KEYS, not a free-form dict. §14
+    // work-verification-light. Pin so we don't drift back to dict
+    // shape.
     const tool = findTool("cueapi_fire_cue");
     const { client, calls } = stubClient();
-    const ec = { type: "outcome_state", value: "verified_success" };
+    const ec = ["task_completed", "result_valid"];
     await tool.handler(client, {
       cue_id: "cue_abc123",
       exit_criteria: ec,
@@ -236,10 +240,14 @@ describe("cueapi_fire_cue — HTTP contract", () => {
     expect(calls[0].body).toEqual({ exit_criteria: ec });
   });
 
-  it("idempotency_key flows as Idempotency-Key HEADER, not a body field (cueapi #683 parity)", async () => {
-    // Pin: server's FireRequest is extra="forbid" — sending
-    // `idempotency_key` in the body would 400. The handler MUST move
-    // it to the Idempotency-Key header.
+  it("idempotency_key flows as a BODY field (cueapi #683 parity)", async () => {
+    // Pin: server's FireRequest schema (app/schemas/cue.py) defines
+    // ``idempotency_key`` as a body field, NOT a header. This diverges
+    // from the messaging primitive (POST /v1/messages takes
+    // ``Idempotency-Key`` as a header) — same feature name, different
+    // transports per endpoint. Server-side inconsistency the SDK has to
+    // live with. A "simplifying" refactor that moved this to a header
+    // would silently fail (Pydantic body parser ignores headers).
     const tool = findTool("cueapi_fire_cue");
     const { client, calls } = stubClient();
     await tool.handler(client, {
@@ -247,36 +255,37 @@ describe("cueapi_fire_cue — HTTP contract", () => {
       idempotency_key: "ci-run-456",
     });
 
-    expect(calls[0].body).toEqual({});
-    expect(calls[0].body).not.toHaveProperty("idempotency_key");
-    expect(calls[0].headers).toEqual({ "Idempotency-Key": "ci-run-456" });
+    expect(calls[0].body).toEqual({ idempotency_key: "ci-run-456" });
+    expect(calls[0].headers).toBeUndefined();
   });
 
-  it("omits Idempotency-Key header when idempotency_key is unset", async () => {
+  it("omits idempotency_key from body when unset", async () => {
     const tool = findTool("cueapi_fire_cue");
     const { client, calls } = stubClient();
     await tool.handler(client, { cue_id: "cue_abc123" });
 
-    expect(calls[0].headers).toBeUndefined();
+    expect(calls[0].body).toEqual({});
+    expect(calls[0].body).not.toHaveProperty("idempotency_key");
   });
 
-  it("send_at + exit_criteria + idempotency_key together — body has the two, header has the key", async () => {
+  it("send_at + exit_criteria + idempotency_key all flow into the body together", async () => {
     const tool = findTool("cueapi_fire_cue");
     const { client, calls } = stubClient();
     await tool.handler(client, {
       cue_id: "cue_abc123",
       payload_override: { task: "x" },
       send_at: "2030-01-01T12:00:00Z",
-      exit_criteria: { type: "manual" },
+      exit_criteria: ["task_completed"],
       idempotency_key: "abc",
     });
 
     expect(calls[0].body).toEqual({
       payload_override: { task: "x" },
       send_at: "2030-01-01T12:00:00Z",
-      exit_criteria: { type: "manual" },
+      exit_criteria: ["task_completed"],
+      idempotency_key: "abc",
     });
-    expect(calls[0].headers).toEqual({ "Idempotency-Key": "abc" });
+    expect(calls[0].headers).toBeUndefined();
   });
 });
 

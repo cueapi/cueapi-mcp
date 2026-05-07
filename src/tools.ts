@@ -153,17 +153,18 @@ const fireCueSchema = z.object({
       "Optional ISO 8601 timestamp to delay this fire (cueapi #618). When omitted, the execution is scheduled immediately. When provided, the server schedules the execution for this timestamp instead. Per-fire scheduling — does NOT mutate the cue's recurring schedule."
     ),
   exit_criteria: z
-    .record(z.unknown())
+    .array(z.string())
+    .max(20)
     .optional()
     .describe(
-      "Optional per-fire termination conditions (cueapi #632). Dict shape mirrors the API contract; keys vary by criterion type. Use to override the cue's default exit semantics for this single fire."
+      "§14 work-verification-light required-assertion keys (cueapi #632). Per-fire override of cue.verification.required_assertions. When non-null, the receiver MUST report values for every key under outcome.assertions; missing keys mark the execution verification_failed. Empty list ([]) explicitly opts out of cue-level required_assertions for this fire. Max 20 keys."
     ),
   idempotency_key: z
     .string()
-    .max(255)
+    .max(256)
     .optional()
     .describe(
-      "Optional Idempotency-Key header (cueapi #683, ≤255 chars). Same key + same body within 24h returns the existing execution with HTTP 200 instead of creating a new fire. Same key + different body returns 409 idempotency_key_conflict. Sent as a header, NOT a body field."
+      "Opaque caller-supplied dedup key (cueapi #683 Phase 2, ≤256 chars). Same key on the same cue within 24h returns the cached execution without firing again (matched by SHA-256 fingerprint of the canonicalized body). Same key + DIFFERENT body in the window returns 409 idempotency_key_conflict. Sent as a BODY field on cues fire — server-side inconsistency vs messaging primitive (which uses Idempotency-Key header); Phase 2 spec puts it in the body for cues."
     ),
 });
 
@@ -342,18 +343,18 @@ export const tools: ToolDefinition[] = [
       if (args.merge_strategy) body.merge_strategy = args.merge_strategy;
       if (args.send_at) body.send_at = args.send_at;
       if (args.exit_criteria) body.exit_criteria = args.exit_criteria;
-      // idempotency_key flows as a header, NOT a body field — server's
-      // FireRequest is extra="forbid" and would 400 on `{"idempotency_key": ...}`.
-      const extraHeaders: Record<string, string> | undefined = args.idempotency_key
-        ? { "Idempotency-Key": args.idempotency_key }
-        : undefined;
+      // idempotency_key is a BODY field on cues fire (server's FireRequest
+      // schema, cueapi #683). Server-side inconsistency vs messaging
+      // primitive: messages send takes Idempotency-Key as a HEADER,
+      // but cues fire takes idempotency_key in the body. Same feature
+      // name, two transports. Verified against app/schemas/cue.py
+      // FireRequest. Don't "simplify" by moving to a header — server
+      // wouldn't see it (Pydantic body parser ignores headers).
+      if (args.idempotency_key) body.idempotency_key = args.idempotency_key;
       return client.request(
         "POST",
         `/v1/cues/${encodeURIComponent(args.cue_id)}/fire`,
-        body,
-        undefined, // no query params
-        undefined, // no per-call apiKey override (use default)
-        extraHeaders
+        body
       );
     },
   },
