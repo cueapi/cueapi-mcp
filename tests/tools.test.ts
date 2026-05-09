@@ -119,12 +119,28 @@ describe("cueapi_fire_cue — HTTP contract", () => {
   }
 
   function stubClient() {
-    const calls: Array<{ method: string; path: string; body?: unknown; query?: unknown }> = [];
+    const calls: Array<{
+      method: string;
+      path: string;
+      body?: unknown;
+      query?: unknown;
+      apiKey?: unknown;
+      headers?: Record<string, string>;
+    }> = [];
     const client = {
-      request: vi.fn(async (method: string, path: string, body?: unknown, query?: unknown) => {
-        calls.push({ method, path, body, query });
-        return { execution_id: "exec_test", status: "queued" };
-      }),
+      request: vi.fn(
+        async (
+          method: string,
+          path: string,
+          body?: unknown,
+          query?: unknown,
+          apiKey?: unknown,
+          headers?: Record<string, string>
+        ) => {
+          calls.push({ method, path, body, query, apiKey, headers });
+          return { execution_id: "exec_test", status: "queued" };
+        }
+      ),
     } as unknown as CueAPIClient;
     return { client, calls };
   }
@@ -193,6 +209,83 @@ describe("cueapi_fire_cue — HTTP contract", () => {
     const { client, calls } = stubClient();
     await tool.handler(client, { cue_id: "cue/with/slashes" });
     expect(calls[0].path).toBe("/v1/cues/cue%2Fwith%2Fslashes/fire");
+  });
+
+  // send_at + exit_criteria + idempotency_key parity (cueapi #618 / #632 / #683)
+
+  it("passes send_at as ISO string into the body (cueapi #618 parity)", async () => {
+    const tool = findTool("cueapi_fire_cue");
+    const { client, calls } = stubClient();
+    await tool.handler(client, {
+      cue_id: "cue_abc123",
+      send_at: "2030-01-01T12:00:00Z",
+    });
+
+    expect(calls[0].body).toEqual({ send_at: "2030-01-01T12:00:00Z" });
+  });
+
+  it("passes exit_criteria as a string array into the body (cueapi #632 parity)", async () => {
+    // Server's FireRequest.exit_criteria is Optional[List[str]] — a
+    // list of required-assertion KEYS, not a free-form dict. §14
+    // work-verification-light. Pin so we don't drift back to dict
+    // shape.
+    const tool = findTool("cueapi_fire_cue");
+    const { client, calls } = stubClient();
+    const ec = ["task_completed", "result_valid"];
+    await tool.handler(client, {
+      cue_id: "cue_abc123",
+      exit_criteria: ec,
+    });
+
+    expect(calls[0].body).toEqual({ exit_criteria: ec });
+  });
+
+  it("idempotency_key flows as a BODY field (cueapi #683 parity)", async () => {
+    // Pin: server's FireRequest schema (app/schemas/cue.py) defines
+    // ``idempotency_key`` as a body field, NOT a header. This diverges
+    // from the messaging primitive (POST /v1/messages takes
+    // ``Idempotency-Key`` as a header) — same feature name, different
+    // transports per endpoint. Server-side inconsistency the SDK has to
+    // live with. A "simplifying" refactor that moved this to a header
+    // would silently fail (Pydantic body parser ignores headers).
+    const tool = findTool("cueapi_fire_cue");
+    const { client, calls } = stubClient();
+    await tool.handler(client, {
+      cue_id: "cue_abc123",
+      idempotency_key: "ci-run-456",
+    });
+
+    expect(calls[0].body).toEqual({ idempotency_key: "ci-run-456" });
+    expect(calls[0].headers).toBeUndefined();
+  });
+
+  it("omits idempotency_key from body when unset", async () => {
+    const tool = findTool("cueapi_fire_cue");
+    const { client, calls } = stubClient();
+    await tool.handler(client, { cue_id: "cue_abc123" });
+
+    expect(calls[0].body).toEqual({});
+    expect(calls[0].body).not.toHaveProperty("idempotency_key");
+  });
+
+  it("send_at + exit_criteria + idempotency_key all flow into the body together", async () => {
+    const tool = findTool("cueapi_fire_cue");
+    const { client, calls } = stubClient();
+    await tool.handler(client, {
+      cue_id: "cue_abc123",
+      payload_override: { task: "x" },
+      send_at: "2030-01-01T12:00:00Z",
+      exit_criteria: ["task_completed"],
+      idempotency_key: "abc",
+    });
+
+    expect(calls[0].body).toEqual({
+      payload_override: { task: "x" },
+      send_at: "2030-01-01T12:00:00Z",
+      exit_criteria: ["task_completed"],
+      idempotency_key: "abc",
+    });
+    expect(calls[0].headers).toBeUndefined();
   });
 });
 
