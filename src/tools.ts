@@ -74,6 +74,16 @@ const cueIdSchema = z.object({
   cue_id: z.string().describe("CueAPI cue ID (e.g. 'cue_...')"),
 });
 
+const bulkDeleteCuesSchema = z.object({
+  ids: z
+    .array(z.string())
+    .min(1)
+    .max(100)
+    .describe(
+      "Cue IDs to delete (1-100 per call). Per-ID atomic, NOT batch atomic — IDs that don't exist OR aren't owned by the caller land in the response's 'skipped' array (silent skip on miss; no info leak about other tenants' cues)."
+    ),
+});
+
 const updateCueSchema = z.object({
   cue_id: z.string().describe("CueAPI cue ID to update"),
   name: z.string().min(1).optional().describe("New cue name"),
@@ -403,6 +413,21 @@ export const tools: ToolDefinition[] = [
       client.request(
         "DELETE",
         `/v1/cues/${encodeURIComponent(args.cue_id)}`
+      ),
+  },
+  {
+    name: "cueapi_bulk_delete_cues",
+    description:
+      "Delete multiple cues in a single call (max 100). Returns {deleted, skipped} — per-ID atomic, not batch atomic. IDs that don't exist or aren't owned by the caller land in 'skipped' (silent skip on miss; no info leak about other tenants' cues). Cascade FK handles executions + dispatch_outbox cleanup. Sends X-Confirm-Destructive: true automatically (server requires it for any bulk-destructive endpoint).",
+    schema: bulkDeleteCuesSchema,
+    handler: async (client, args) =>
+      client.request(
+        "POST",
+        "/v1/cues/bulk-delete",
+        { ids: args.ids },
+        undefined,
+        undefined,
+        { "X-Confirm-Destructive": "true" }
       ),
   },
   {
