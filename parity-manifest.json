@@ -17,6 +17,7 @@
     "GET /v1/cues/{id}": {"tool": "cueapi_get_cue"},
     "PATCH /v1/cues/{id}": {"tool": "cueapi_update_cue, cueapi_pause_cue, cueapi_resume_cue (pause/resume are PATCH variants with status field, not separate endpoints)"},
     "DELETE /v1/cues/{id}": {"tool": "cueapi_delete_cue"},
+    "POST /v1/cues/bulk-delete": {"tool": "cueapi_bulk_delete_cues — wraps cueapi #650 / cli #46. Per-ID atomic, max 100 per call. Sends X-Confirm-Destructive: true automatically."},
     "POST /v1/cues/{id}/fire": {"tool": "cueapi_fire_cue"},
     "GET /v1/executions": {"tool": "cueapi_list_executions"},
     "GET /v1/executions/{id}": {"tool": "cueapi_get_execution"},

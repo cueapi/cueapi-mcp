@@ -1227,3 +1227,50 @@ describe("cueapi_send_message — HTTP contract (PR #619 BCC-light)", () => {
     });
   });
 });
+
+describe("cueapi_bulk_delete_cues — schema + HTTP contract", () => {
+  it("registers the tool with the cueapi_* naming convention", () => {
+    const tool = tools.find((t) => t.name === "cueapi_bulk_delete_cues");
+    expect(tool).toBeDefined();
+    expect(tool!.description.length).toBeGreaterThan(20);
+  });
+
+  it("schema rejects empty ids array", () => {
+    const tool = tools.find((t) => t.name === "cueapi_bulk_delete_cues")!;
+    expect(() => tool.schema.parse({ ids: [] })).toThrow();
+  });
+
+  it("schema rejects more than 100 ids", () => {
+    const tool = tools.find((t) => t.name === "cueapi_bulk_delete_cues")!;
+    const tooMany = Array.from({ length: 101 }, (_, i) => `cue_${i}`);
+    expect(() => tool.schema.parse({ ids: tooMany })).toThrow();
+  });
+
+  it("schema accepts exactly 100 ids (boundary)", () => {
+    const tool = tools.find((t) => t.name === "cueapi_bulk_delete_cues")!;
+    const exactlyMax = Array.from({ length: 100 }, (_, i) => `cue_${i}`);
+    expect(() => tool.schema.parse({ ids: exactlyMax })).not.toThrow();
+  });
+
+  it("handler POSTs to /v1/cues/bulk-delete with X-Confirm-Destructive header", async () => {
+    const tool = tools.find((t) => t.name === "cueapi_bulk_delete_cues")!;
+    const calls: unknown[] = [];
+    const mockClient = {
+      request: vi.fn(async (...args: unknown[]) => {
+        calls.push(args);
+        return { deleted: ["cue_a"], skipped: [] };
+      }),
+    } as unknown as CueAPIClient;
+
+    await tool.handler(mockClient, { ids: ["cue_a"] });
+
+    expect(calls).toHaveLength(1);
+    const [method, path, body, query, apiKey, headers] = calls[0] as unknown[];
+    expect(method).toBe("POST");
+    expect(path).toBe("/v1/cues/bulk-delete");
+    expect(body).toEqual({ ids: ["cue_a"] });
+    expect(query).toBeUndefined();
+    expect(apiKey).toBeUndefined();
+    expect(headers).toEqual({ "X-Confirm-Destructive": "true" });
+  });
+});
