@@ -334,6 +334,12 @@ const sendMessageSchema = z.object({
     .describe(
       "Server dedups same-key sends from the same sender; dedup-hit returns the original message_id and bcc_emitted=[] (no re-emit of notifications). Recommended for retry-safe sends."
     ),
+  send_at: z
+    .string()
+    .optional()
+    .describe(
+      "Optional ISO 8601 timestamp to schedule this message for future delivery (cueapi #623, §13). Omitted = send now (server default). When set in the future, the message sits in the recipient's inbox-query gate until `send_at <= now()`, then becomes fetchable; push-delivery dispatch is also gated. Past timestamps are treated as send-now (forgiving fallback). Same semantics as cue-fire `send_at` (PR #618)."
+    ),
 });
 
 // ---------- tools ----------
@@ -684,6 +690,7 @@ export const tools: ToolDefinition[] = [
       // format identical to pre-Surface-6 senders and avoids payload noise
       // on the common path.
       if (args.mode && args.mode !== "auto") body.delivery_mode = args.mode;
+      if (args.send_at) body.send_at = args.send_at;
       const extraHeaders: Record<string, string> = {
         "X-Cueapi-From-Agent": args.from,
       };

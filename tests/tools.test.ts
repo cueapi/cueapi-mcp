@@ -1319,6 +1319,84 @@ describe("cueapi_send_message — HTTP contract (PR #619 BCC-light)", () => {
       expect(description).toContain("effective_delivery_mode");
     });
   });
+
+  // cueapi #623 — per-message send_at scheduling
+  describe("send_at parameter (cueapi #623 — scheduled send)", () => {
+    it("send_at is omitted by default (server treats absent === send-now)", async () => {
+      // Wire-format must match pre-#623 senders when caller doesn't pass
+      // send_at. Server contract: NULL send_at === deliver immediately.
+      const tool = findTool("cueapi_send_message");
+      const { client, calls } = stubClient();
+      await tool.handler(client, {
+        to: "agt_bob",
+        from: "agt_alice",
+        subject: "x",
+        body: "y",
+      });
+      expect(calls[0].body).not.toHaveProperty("send_at");
+    });
+
+    it("send_at passes through to body verbatim as ISO string", async () => {
+      // Server takes send_at as a body field on POST /v1/messages
+      // (MessageCreate.send_at, app/schemas/message.py). Same shape as
+      // cue-fire send_at (PR #618). Pin the body field path.
+      const tool = findTool("cueapi_send_message");
+      const { client, calls } = stubClient();
+      const future = "2099-01-01T00:00:00Z";
+      await tool.handler(client, {
+        to: "agt_bob",
+        from: "agt_alice",
+        subject: "x",
+        body: "y",
+        send_at: future,
+      });
+      expect(calls[0].body).toMatchObject({ send_at: future });
+    });
+
+    it("send_at is a body field, NOT a header (mirrors cue-fire transport)", async () => {
+      // Verify-server-transport-per-endpoint: same field name (send_at)
+      // could in principle be a header; here it's a body field. Pin it
+      // so a refactor doesn't accidentally promote it to a header and
+      // diverge from the server contract.
+      const tool = findTool("cueapi_send_message");
+      const { client, calls } = stubClient();
+      await tool.handler(client, {
+        to: "agt_bob",
+        from: "agt_alice",
+        subject: "x",
+        body: "y",
+        send_at: "2099-01-01T00:00:00Z",
+      });
+      // Headers should only contain X-Cueapi-From-Agent (no send_at header).
+      const headers = calls[0].extraHeaders ?? {};
+      expect(Object.keys(headers)).not.toContain("Send-At");
+      expect(Object.keys(headers)).not.toContain("X-Cueapi-Send-At");
+      expect(headers["X-Cueapi-From-Agent"]).toBe("agt_alice");
+    });
+
+    it("send_at + notify + idempotency_key all flow correctly", async () => {
+      // Combo test: ensure adding send_at didn't displace any of the
+      // other optional fields. notify in body, idempotency_key in
+      // header, send_at in body, from in header.
+      const tool = findTool("cueapi_send_message");
+      const { client, calls } = stubClient();
+      await tool.handler(client, {
+        to: "agt_bob",
+        from: "agt_alice",
+        subject: "x",
+        body: "y",
+        send_at: "2099-01-01T00:00:00Z",
+        notify: ["agt_charlie"],
+        idempotency_key: "k-1",
+      });
+      expect(calls[0].body).toMatchObject({
+        send_at: "2099-01-01T00:00:00Z",
+        notify: ["agt_charlie"],
+      });
+      expect(calls[0].extraHeaders?.["Idempotency-Key"]).toBe("k-1");
+      expect(calls[0].extraHeaders?.["X-Cueapi-From-Agent"]).toBe("agt_alice");
+    });
+  });
 });
 
 describe("cueapi_bulk_delete_cues — schema + HTTP contract", () => {
