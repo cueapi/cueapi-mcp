@@ -1365,6 +1365,8 @@ describe("cueapi_bulk_delete_cues — schema + HTTP contract", () => {
     expect(query).toBeUndefined();
     expect(apiKey).toBeUndefined();
     expect(headers).toEqual({ "X-Confirm-Destructive": "true" });
+  });
+});
 
 describe("agent directory tools — HTTP contract", () => {
   // Read-only agent directory surface (PR #28 + #40 + #630 + #662).
@@ -1479,3 +1481,5 @@ describe("agent directory tools — HTTP contract", () => {
     expect(calls[0].headers).toEqual({ "If-None-Match": 'W/"abc"' });
   });
 });
+/* CI parser cache-bust */
+
