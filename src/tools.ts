@@ -242,6 +242,40 @@ const reportOutcomeSchema = z.object({
 // Messaging primitive — Phase 12.1.5. Minimum-viable scope: send_message
 // only, with the §17 BCC-light notify field (PR #619). Full messaging
 // lifecycle (get/read/ack/inbox/sent) tracked separately in
+// Agent directory schemas — read-only surface for the messaging primitive's
+// identity layer. Write operations (create/update/delete agent) deliberately
+// not exposed in this MCP wrapper today; agents are typically managed via
+// dashboard or CLI by humans, not by automated MCP callers.
+const listAgentsSchema = z.object({
+  status: z
+    .enum(["online", "offline"])
+    .optional()
+    .describe("Filter agents by online status. Mutually exclusive with online_only."),
+  online_only: z
+    .boolean()
+    .optional()
+    .describe("Convenience flag: filter to agents currently online (PR #40). Mutually exclusive with status."),
+  limit: z.number().int().min(1).max(100).optional(),
+  offset: z.number().int().min(0).optional(),
+});
+
+const agentRefSchema = z.object({
+  ref: z
+    .string()
+    .describe(
+      "Agent address — opaque ID 'agt_xxx' or slug-form 'agent_slug@user_slug'. Same shape used in cueapi_send_message's to/from fields."
+    ),
+});
+
+const agentRosterSchema = z.object({
+  if_none_match: z
+    .string()
+    .optional()
+    .describe(
+      "Optional ETag from a prior call (PR #630). Server returns 304 Not Modified if the directory hasn't changed since that ETag — caller can reuse cached payload. Sent as If-None-Match header."
+    ),
+});
+
 // `endpoints_missing` for a follow-up port.
 const sendMessageSchema = z.object({
   to: z
@@ -568,6 +602,65 @@ export const tools: ToolDefinition[] = [
         "POST",
         `/v1/executions/${encodeURIComponent(args.execution_id)}/outcome`,
         body
+      );
+    },
+  },
+  // Agent directory (read-only) — identity layer for the messaging primitive.
+  // Write operations are intentionally NOT exposed: agents are typically
+  // created/updated/deleted by humans via dashboard or CLI, not by MCP
+  // callers. Adding write surface would create the wrong abstraction.
+  {
+    name: "cueapi_list_agents",
+    description:
+      "List agents owned by the calling user. Returns agent records with id, slug, display_name, status (online/offline), and presence-relevant fields. Use to discover candidate recipients for cueapi_send_message — get the agent's address (opaque agt_xxx ID or slug-form), then send. Filter via `status` (online/offline) or `online_only=true` (convenience flag, mutually exclusive with status). Pagination via limit/offset.",
+    schema: listAgentsSchema,
+    handler: async (client, args) => {
+      const query: Record<string, string | number | undefined> = {};
+      if (args.online_only) {
+        query.online_only = "true";
+      } else if (args.status) {
+        query.status = args.status;
+      }
+      if (args.limit !== undefined) query.limit = args.limit;
+      if (args.offset !== undefined) query.offset = args.offset;
+      return client.request("GET", "/v1/agents", undefined, query);
+    },
+  },
+  {
+    name: "cueapi_get_agent",
+    description:
+      "Fetch a single agent record by ref (opaque agt_xxx ID or slug-form 'agent_slug@user_slug'). Returns the full agent record with presence + delivery_capabilities + webhook config (no secret — for that use cueapi_get_agent_webhook_secret if exposed in a future port). Use as the natural follow-up to cueapi_list_agents when you need a specific agent's full details.",
+    schema: agentRefSchema,
+    handler: async (client, args) =>
+      client.request("GET", `/v1/agents/${encodeURIComponent(args.ref)}`),
+  },
+  {
+    name: "cueapi_get_agent_presence",
+    description:
+      "Cheap-poll an agent's presence block (PR #662). Lighter than cueapi_get_agent — returns just the presence-relevant fields (online, derived_status, bucketed_seen, default_live, labeled_sessions, etag) without the full agent record. Designed for UIs or schedulers that need to refresh a single agent's status every few seconds without re-fetching the directory or the full agent record.",
+    schema: agentRefSchema,
+    handler: async (client, args) =>
+      client.request(
+        "GET",
+        `/v1/agents/${encodeURIComponent(args.ref)}/presence`
+      ),
+  },
+  {
+    name: "cueapi_get_agent_roster",
+    description:
+      "Get the agent directory (PR #630) — every agent owned by the calling key with a presence block (online, derived_status, bucketed_seen, default_live cue, labeled live sessions). Used by directory UIs and by senders who want to choose recipients based on presence. Pass `if_none_match` (an ETag from a prior call) to cheap-poll without re-fetching the payload — server returns HTTP 304 when nothing's changed.",
+    schema: agentRosterSchema,
+    handler: async (client, args) => {
+      const headers: Record<string, string> | undefined = args.if_none_match
+        ? { "If-None-Match": args.if_none_match }
+        : undefined;
+      return client.request(
+        "GET",
+        "/v1/agents/roster",
+        undefined,
+        undefined,
+        undefined,
+        headers
       );
     },
   },

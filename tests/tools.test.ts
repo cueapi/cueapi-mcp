@@ -1367,3 +1367,119 @@ describe("cueapi_bulk_delete_cues — schema + HTTP contract", () => {
     expect(headers).toEqual({ "X-Confirm-Destructive": "true" });
   });
 });
+
+describe("agent directory tools — HTTP contract", () => {
+  // Read-only agent directory surface (PR #28 + #40 + #630 + #662).
+  // Pin path + method + query/header semantics so a regression doesn't
+  // silently turn list-by-online-only into list-all-agents.
+
+  function findTool(name: string) {
+    const t = tools.find((x) => x.name === name);
+    if (!t) throw new Error(`tool ${name} missing`);
+    return t;
+  }
+
+  function stubClient() {
+    const calls: Array<{
+      method: string;
+      path: string;
+      body?: unknown;
+      query?: unknown;
+      apiKey?: unknown;
+      headers?: Record<string, string>;
+    }> = [];
+    const client = {
+      request: vi.fn(
+        async (
+          method: string,
+          path: string,
+          body?: unknown,
+          query?: unknown,
+          apiKey?: unknown,
+          headers?: Record<string, string>
+        ) => {
+          calls.push({ method, path, body, query, apiKey, headers });
+          return { agents: [], etag: "v1" };
+        }
+      ),
+    } as unknown as CueAPIClient;
+    return { client, calls };
+  }
+
+  it("cueapi_list_agents → GET /v1/agents with no filter", async () => {
+    const tool = findTool("cueapi_list_agents");
+    const { client, calls } = stubClient();
+    await tool.handler(client, {});
+
+    expect(calls[0].method).toBe("GET");
+    expect(calls[0].path).toBe("/v1/agents");
+    expect(calls[0].query).toEqual({});
+  });
+
+  it("cueapi_list_agents online_only takes precedence over status", async () => {
+    // Server contract: --online-only (PR #40) is mutually exclusive with
+    // --status. When both are passed, online_only wins. Pin so the order
+    // doesn't drift.
+    const tool = findTool("cueapi_list_agents");
+    const { client, calls } = stubClient();
+    await tool.handler(client, { online_only: true, status: "offline" });
+
+    expect(calls[0].query).toEqual({ online_only: "true" });
+    expect(calls[0].query).not.toHaveProperty("status");
+  });
+
+  it("cueapi_list_agents passes status when online_only not set", async () => {
+    const tool = findTool("cueapi_list_agents");
+    const { client, calls } = stubClient();
+    await tool.handler(client, { status: "online", limit: 50 });
+
+    expect(calls[0].query).toEqual({ status: "online", limit: 50 });
+  });
+
+  it("cueapi_get_agent → GET /v1/agents/{ref}", async () => {
+    const tool = findTool("cueapi_get_agent");
+    const { client, calls } = stubClient();
+    await tool.handler(client, { ref: "agt_abcdef123456" });
+
+    expect(calls[0].method).toBe("GET");
+    expect(calls[0].path).toBe("/v1/agents/agt_abcdef123456");
+  });
+
+  it("cueapi_get_agent url-encodes slug-form ref", async () => {
+    const tool = findTool("cueapi_get_agent");
+    const { client, calls } = stubClient();
+    await tool.handler(client, { ref: "foo@me" });
+
+    // @ encoded as %40
+    expect(calls[0].path).toBe("/v1/agents/foo%40me");
+  });
+
+  it("cueapi_get_agent_presence → GET /v1/agents/{ref}/presence", async () => {
+    const tool = findTool("cueapi_get_agent_presence");
+    const { client, calls } = stubClient();
+    await tool.handler(client, { ref: "agt_abcdef123456" });
+
+    expect(calls[0].method).toBe("GET");
+    expect(calls[0].path).toBe("/v1/agents/agt_abcdef123456/presence");
+  });
+
+  it("cueapi_get_agent_roster → GET /v1/agents/roster, no header by default", async () => {
+    const tool = findTool("cueapi_get_agent_roster");
+    const { client, calls } = stubClient();
+    await tool.handler(client, {});
+
+    expect(calls[0].method).toBe("GET");
+    expect(calls[0].path).toBe("/v1/agents/roster");
+    expect(calls[0].headers).toBeUndefined();
+  });
+
+  it("cueapi_get_agent_roster passes If-None-Match header when if_none_match set", async () => {
+    const tool = findTool("cueapi_get_agent_roster");
+    const { client, calls } = stubClient();
+    await tool.handler(client, { if_none_match: 'W/"abc"' });
+
+    expect(calls[0].headers).toEqual({ "If-None-Match": 'W/"abc"' });
+  });
+});
+/* CI parser cache-bust */
+
