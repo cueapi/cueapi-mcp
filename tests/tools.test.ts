@@ -1740,3 +1740,140 @@ describe("agent directory tools — HTTP contract", () => {
 });
 /* CI parser cache-bust */
 
+
+describe("cueapi_fire_cue — body-verify Phase 2 (opt-in; parity with cueapi-cli #55, cueapi-python #41)", () => {
+  // Opt-in design because substrate /v1/cues/{id}/fire echoes a pydantic-
+  // after-parse body that may include server-side default-population —
+  // would cause spurious diff vs the tool's JSON.stringify(body).
+  // Diverges from cueapi_send_message which is default-on (different
+  // endpoint, different echo semantics post-#798 spec-lock).
+
+  function findTool(name: string) {
+    const t = tools.find((x) => x.name === name);
+    if (!t) throw new Error(`tool ${name} missing`);
+    return t;
+  }
+
+  function stubClientWithResponse(response: Record<string, unknown>) {
+    const calls: Array<{
+      method: string;
+      path: string;
+      body?: unknown;
+      query?: unknown;
+      apiKey?: string;
+      extraHeaders?: Record<string, string>;
+    }> = [];
+    const client = {
+      request: vi.fn(
+        async (
+          method: string,
+          path: string,
+          body?: unknown,
+          query?: unknown,
+          apiKey?: string,
+          extraHeaders?: Record<string, string>
+        ) => {
+          calls.push({ method, path, body, query, apiKey, extraHeaders });
+          return response;
+        }
+      ),
+    } as unknown as CueAPIClient;
+    return { client, calls };
+  }
+
+  it("default (no auto_verify) omits X-CueAPI-Verify-Echo — preserves wire format for non-opted callers", async () => {
+    const tool = findTool("cueapi_fire_cue");
+    const { client, calls } = stubClientWithResponse({ id: "exec_1" });
+    await tool.handler(client, { cue_id: "cue_x" });
+    // Handler passes undefined headers when verify is off → no extraHeaders
+    expect(
+      calls[0].extraHeaders === undefined ||
+        calls[0].extraHeaders?.["X-CueAPI-Verify-Echo"] === undefined
+    ).toBe(true);
+  });
+
+  it("auto_verify=true sends X-CueAPI-Verify-Echo: true header", async () => {
+    const tool = findTool("cueapi_fire_cue");
+    const { client, calls } = stubClientWithResponse({
+      id: "exec_1",
+      body_received: JSON.stringify({}), // matches sent body
+    });
+    await tool.handler(client, { cue_id: "cue_x", auto_verify: true });
+    expect(calls[0].extraHeaders?.["X-CueAPI-Verify-Echo"]).toBe("true");
+  });
+
+  it("matching body_received (STRING shape) passes through silently", async () => {
+    const tool = findTool("cueapi_fire_cue");
+    const sentBody = JSON.stringify({
+      payload_override: { foo: "bar" },
+    });
+    const { client } = stubClientWithResponse({
+      id: "exec_1",
+      body_received: sentBody,
+    });
+    const result = await tool.handler(client, {
+      cue_id: "cue_x",
+      payload_override: { foo: "bar" },
+      auto_verify: true,
+    });
+    expect(result).toMatchObject({ id: "exec_1" });
+  });
+
+  it("matching body_received (dict shape — pre-#798 wire) passes via JSON.stringify-equivalence", async () => {
+    const tool = findTool("cueapi_fire_cue");
+    // Substrate returns the dict shape; we JSON.stringify it and compare
+    // against our own canonical body string. They're byte-identical here.
+    const { client } = stubClientWithResponse({
+      id: "exec_1",
+      body_received: { payload_override: { foo: "bar" } },
+    });
+    const result = await tool.handler(client, {
+      cue_id: "cue_x",
+      payload_override: { foo: "bar" },
+      auto_verify: true,
+    });
+    expect(result).toMatchObject({ id: "exec_1" });
+  });
+
+  it("mismatched body_received throws with byte-divergence diagnostic", async () => {
+    const tool = findTool("cueapi_fire_cue");
+    const { client } = stubClientWithResponse({
+      id: "exec_corrupted",
+      body_received: JSON.stringify({
+        payload_override: { foo: "BAR" }, // differs from sent "bar"
+      }),
+    });
+    await expect(
+      tool.handler(client, {
+        cue_id: "cue_x",
+        payload_override: { foo: "bar" },
+        auto_verify: true,
+      })
+    ).rejects.toThrow(/body-verify mismatch/);
+  });
+
+  it("mismatch error includes the execution id from response", async () => {
+    const tool = findTool("cueapi_fire_cue");
+    const { client } = stubClientWithResponse({
+      id: "exec_corrupted_42",
+      body_received: "not what we sent",
+    });
+    await expect(
+      tool.handler(client, {
+        cue_id: "cue_x",
+        payload_override: { foo: "bar" },
+        auto_verify: true,
+      })
+    ).rejects.toThrow(/exec_corrupted_42/);
+  });
+
+  it("missing body_received in response is silently OK (substrate didn't echo)", async () => {
+    const tool = findTool("cueapi_fire_cue");
+    const { client } = stubClientWithResponse({ id: "exec_1" });
+    const result = await tool.handler(client, {
+      cue_id: "cue_x",
+      auto_verify: true,
+    });
+    expect(result).toMatchObject({ id: "exec_1" });
+  });
+});

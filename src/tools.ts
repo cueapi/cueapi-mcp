@@ -176,6 +176,12 @@ const fireCueSchema = z.object({
     .describe(
       "Opaque caller-supplied dedup key (cueapi #683 Phase 2, ≤256 chars). Same key on the same cue within 24h returns the cached execution without firing again (matched by SHA-256 fingerprint of the canonicalized body). Same key + DIFFERENT body in the window returns 409 idempotency_key_conflict. Sent as a BODY field on cues fire — server-side inconsistency vs messaging primitive (which uses Idempotency-Key header); Phase 2 spec puts it in the body for cues."
     ),
+  auto_verify: z
+    .boolean()
+    .optional()
+    .describe(
+      "OPT-IN body-verify Phase 2 (Mike directive 2026-05-11; parity with cueapi-python #41 and cueapi-cli #55). When true, the tool sends X-CueAPI-Verify-Echo + compares substrate-echoed body_received against the body sent; throws on mismatch with byte-diff diagnostic. **Default OFF** for cues fire because substrate /v1/cues/{id}/fire echoes a pydantic-after-parse body that may include server-side default-population, which would cause spurious diff vs the tool's canonical-JSON serialization. Opt in when you know substrate echo semantics match your serialization. Diverges from cueapi_send_message's default-on auto_verify — that endpoint echoes the raw STRING body field per the #798 spec-lock, no parsed-defaulted concern."
+    ),
 });
 
 const claimableExecutionsSchema = z.object({
@@ -391,7 +397,7 @@ export const tools: ToolDefinition[] = [
   {
     name: "cueapi_fire_cue",
     description:
-      "Fire an existing cue immediately, optionally overriding its payload for this single invocation. Creates an execution that runs through the cue's normal delivery path, regardless of the cue's schedule. Use payload_override + merge_strategy to swap or merge per-fire dynamic data without mutating the stored cue. Per-cue enforcement (set on the cue via cueapi_create_cue / cueapi_update_cue) can reject fires server-side: HTTP 400 payload_override_required (require_payload_override=true and no override sent), HTTP 400 missing_required_payload_keys (response includes a missing_keys list), HTTP 400 inconsistent_message_instruction (when both 'message' and 'instruction' are required, server enforces byte-equality so different recipient handlers route on the same content).",
+      "Fire an existing cue immediately, optionally overriding its payload for this single invocation. Creates an execution that runs through the cue's normal delivery path, regardless of the cue's schedule. Use payload_override + merge_strategy to swap or merge per-fire dynamic data without mutating the stored cue. Per-cue enforcement (set on the cue via cueapi_create_cue / cueapi_update_cue) can reject fires server-side: HTTP 400 payload_override_required (require_payload_override=true and no override sent), HTTP 400 missing_required_payload_keys (response includes a missing_keys list), HTTP 400 inconsistent_message_instruction (when both 'message' and 'instruction' are required, server enforces byte-equality so different recipient handlers route on the same content). Set auto_verify=true to opt into Phase 2 body-verify (default off — substrate's parsed-after-default echo would cause spurious mismatches for the typical caller).",
     schema: fireCueSchema,
     handler: async (client, args) => {
       const body: Record<string, unknown> = {};
@@ -407,11 +413,98 @@ export const tools: ToolDefinition[] = [
       // FireRequest. Don't "simplify" by moving to a header — server
       // wouldn't see it (Pydantic body parser ignores headers).
       if (args.idempotency_key) body.idempotency_key = args.idempotency_key;
-      return client.request(
+
+      // Phase 2 body-verify (Mike directive 2026-05-11; parity with
+      // cueapi-python #41 and cueapi-cli #55). Opt-in via auto_verify=true.
+      // Default OFF for cues fire because substrate echoes a pydantic-after-
+      // parse body that may include server-side default-population (verified
+      // empirically against staging CI on 2026-05-11). Diverges from
+      // cueapi_send_message which is default-on — that endpoint echoes the
+      // raw STRING body field per the #798 spec-lock.
+      const verify = args.auto_verify === true;
+      const extraHeaders: Record<string, string> = {};
+      let sentBodyStr: string | undefined;
+      if (verify) {
+        extraHeaders["X-CueAPI-Verify-Echo"] = "true";
+        sentBodyStr = JSON.stringify(body);
+      }
+      const resp = await client.request<Record<string, unknown>>(
         "POST",
         `/v1/cues/${encodeURIComponent(args.cue_id)}/fire`,
-        body
+        body,
+        undefined,
+        undefined,
+        verify ? extraHeaders : undefined
       );
+
+      if (
+        verify &&
+        resp &&
+        typeof resp === "object" &&
+        sentBodyStr !== undefined
+      ) {
+        const receivedRaw = (resp as Record<string, unknown>).body_received;
+        let receivedStr: string | undefined;
+        if (typeof receivedRaw === "string") {
+          receivedStr = receivedRaw;
+        } else if (receivedRaw && typeof receivedRaw === "object") {
+          // Pre-#798 wire shape — serialize for compare. Future-proof
+          // for any deployment still on the dict echo.
+          receivedStr = JSON.stringify(receivedRaw);
+        }
+
+        // SHA constant-cost path first; fall back to string compare on
+        // SHA mismatch (canonical-JSON serialization differences could
+        // cause spurious sha diff but match on raw-string compare).
+        const shaField = (resp as Record<string, unknown>)
+          .body_received_sha256;
+        let mismatchDetected = false;
+        if (typeof shaField === "string" && shaField.length === 64) {
+          // Web Crypto SHA-256 is async; for this codepath we'd need to
+          // await it. Skip the SHA-256 fast-path in MCP for now and use
+          // string compare directly — keeps the handler synchronous-
+          // shape and avoids polyfill issues across Node versions.
+          // (cueapi-python #41 and cueapi-cli #55 both have the SHA
+          // path because Python's hashlib is sync; TS land we accept
+          // the string-compare-only trade-off.)
+          if (receivedStr !== undefined && receivedStr !== sentBodyStr) {
+            mismatchDetected = true;
+          }
+        } else if (receivedStr !== undefined && receivedStr !== sentBodyStr) {
+          mismatchDetected = true;
+        }
+
+        if (mismatchDetected && receivedStr !== undefined) {
+          const sentLen = sentBodyStr.length;
+          const recvLen = receivedStr.length;
+          let divergedAt = -1;
+          const common = Math.min(sentLen, recvLen);
+          for (let i = 0; i < common; i++) {
+            if (sentBodyStr[i] !== receivedStr[i]) {
+              divergedAt = i;
+              break;
+            }
+          }
+          if (divergedAt === -1 && sentLen !== recvLen) {
+            divergedAt = common;
+          }
+          const execId =
+            (resp as Record<string, unknown>).id ??
+            (resp as Record<string, unknown>).execution_id ??
+            "<unknown>";
+          throw new Error(
+            `cueapi_fire_cue body-verify mismatch (execution=${String(
+              execId
+            )}): sent ${sentLen} chars, substrate received ${recvLen} chars` +
+              (divergedAt >= 0
+                ? `, first divergence at byte ${divergedAt}`
+                : "") +
+              `. Likely caller-side mutation of payload_override before reaching the MCP tool. Set auto_verify=false (the default) if you're hitting spurious mismatches from substrate's parsed-defaulted echo.`
+          );
+        }
+      }
+
+      return resp;
     },
   },
   {
