@@ -869,6 +869,9 @@ describe("cueapi_send_message — HTTP contract (PR #619 BCC-light)", () => {
 
     expect(calls[0].extraHeaders).toEqual({
       "X-Cueapi-From-Agent": "agt_alice",
+      // Phase 2 body-verify is on by default — substrate echoes
+      // body_received in the response so we can diff sent vs received.
+      "X-CueAPI-Verify-Echo": "true",
     });
     expect(calls[0].body).not.toHaveProperty("from");
   });
@@ -941,6 +944,8 @@ describe("cueapi_send_message — HTTP contract (PR #619 BCC-light)", () => {
     expect(calls[0].extraHeaders).toEqual({
       "X-Cueapi-From-Agent": "agt_alice",
       "Idempotency-Key": "user-action-123",
+      // Phase 2 body-verify is on by default.
+      "X-CueAPI-Verify-Echo": "true",
     });
     expect(calls[0].body).not.toHaveProperty("idempotency_key");
   });
@@ -1098,6 +1103,9 @@ describe("cueapi_send_message — HTTP contract (PR #619 BCC-light)", () => {
 
     expect(calls[0].extraHeaders).toEqual({
       "X-Cueapi-From-Agent": "agt_alice",
+      // Phase 2 body-verify is on by default — substrate echoes
+      // body_received in the response so we can diff sent vs received.
+      "X-CueAPI-Verify-Echo": "true",
     });
     expect(calls[0].body).not.toHaveProperty("from");
   });
@@ -1170,6 +1178,8 @@ describe("cueapi_send_message — HTTP contract (PR #619 BCC-light)", () => {
     expect(calls[0].extraHeaders).toEqual({
       "X-Cueapi-From-Agent": "agt_alice",
       "Idempotency-Key": "user-action-123",
+      // Phase 2 body-verify is on by default.
+      "X-CueAPI-Verify-Echo": "true",
     });
     expect(calls[0].body).not.toHaveProperty("idempotency_key");
   });
@@ -1396,6 +1406,175 @@ describe("cueapi_send_message — HTTP contract (PR #619 BCC-light)", () => {
       expect(calls[0].extraHeaders?.["Idempotency-Key"]).toBe("k-1");
       expect(calls[0].extraHeaders?.["X-Cueapi-From-Agent"]).toBe("agt_alice");
     });
+  });
+});
+
+describe("cueapi_send_message — body-verify Phase 2 (Mike directive 2026-05-11)", () => {
+  // Parity with cueapi-cli #51/#52/#53 + cueapi-python #39/#40. Substrate
+  // echoes `body_received` in the response when X-CueAPI-Verify-Echo: true
+  // is sent. We diff sent vs received and throw on mismatch with a
+  // byte-level diagnostic so caller-side body corruption (e.g. shell
+  // expansion of $(...) / `...` / ${VAR}) surfaces loudly instead of
+  // silently shipping garbage.
+
+  function findTool(name: string) {
+    const t = tools.find((x) => x.name === name);
+    if (!t) throw new Error(`tool ${name} missing`);
+    return t;
+  }
+
+  function stubClientWithResponse(response: Record<string, unknown>) {
+    const calls: Array<{
+      method: string;
+      path: string;
+      body?: unknown;
+      query?: unknown;
+      apiKey?: string;
+      extraHeaders?: Record<string, string>;
+    }> = [];
+    const client = {
+      request: vi.fn(
+        async (
+          method: string,
+          path: string,
+          body?: unknown,
+          query?: unknown,
+          apiKey?: string,
+          extraHeaders?: Record<string, string>
+        ) => {
+          calls.push({ method, path, body, query, apiKey, extraHeaders });
+          return response;
+        }
+      ),
+    } as unknown as CueAPIClient;
+    return { client, calls };
+  }
+
+  it("default verify-on sends X-CueAPI-Verify-Echo: true header", async () => {
+    const tool = findTool("cueapi_send_message");
+    const { client, calls } = stubClientWithResponse({
+      id: "msg_x",
+      body_received: "hello world",
+    });
+    await tool.handler(client, {
+      to: "agt_bob",
+      from: "agt_alice",
+      subject: "x",
+      body: "hello world",
+    });
+    expect(calls[0].extraHeaders?.["X-CueAPI-Verify-Echo"]).toBe("true");
+  });
+
+  it("auto_verify=false opt-out omits X-CueAPI-Verify-Echo header", async () => {
+    const tool = findTool("cueapi_send_message");
+    const { client, calls } = stubClientWithResponse({ id: "msg_x" });
+    await tool.handler(client, {
+      to: "agt_bob",
+      from: "agt_alice",
+      subject: "x",
+      body: "hello",
+      auto_verify: false,
+    });
+    expect(calls[0].extraHeaders).not.toHaveProperty("X-CueAPI-Verify-Echo");
+  });
+
+  it("matching body_received passes through silently (STRING shape per #798 spec-lock)", async () => {
+    const tool = findTool("cueapi_send_message");
+    const { client } = stubClientWithResponse({
+      id: "msg_x",
+      body_received: "hello world",
+      body_received_sha256: "<irrelevant>",
+    });
+    const result = await tool.handler(client, {
+      to: "agt_bob",
+      from: "agt_alice",
+      subject: "x",
+      body: "hello world",
+    });
+    // Returns the response verbatim — no throw, no mutation.
+    expect(result).toMatchObject({ id: "msg_x" });
+  });
+
+  it("matching body_received as dict shape (defensive fallback for pre-#798 substrate) passes", async () => {
+    // The substrate emitted body_received as a parsed dict between #795
+    // (Layer 1 ship) and #798 (STRING-shape hotfix). If a future substrate
+    // rev resurfaces dict shape, the defensive isinstance check still
+    // extracts `.body` for comparison. Pin the fallback path.
+    const tool = findTool("cueapi_send_message");
+    const { client } = stubClientWithResponse({
+      id: "msg_x",
+      body_received: { to: "agt_bob", subject: "x", body: "hello world" },
+    });
+    const result = await tool.handler(client, {
+      to: "agt_bob",
+      from: "agt_alice",
+      subject: "x",
+      body: "hello world",
+    });
+    expect(result).toMatchObject({ id: "msg_x" });
+  });
+
+  it("mismatched body_received throws with byte-divergence diagnostic", async () => {
+    const tool = findTool("cueapi_send_message");
+    const { client } = stubClientWithResponse({
+      id: "msg_x",
+      body_received: "hello WORLD", // diverges at byte 6
+    });
+    await expect(
+      tool.handler(client, {
+        to: "agt_bob",
+        from: "agt_alice",
+        subject: "x",
+        body: "hello world",
+      })
+    ).rejects.toThrow(/body-verify mismatch/);
+  });
+
+  it("mismatch error includes the divergent-byte index", async () => {
+    const tool = findTool("cueapi_send_message");
+    const { client } = stubClientWithResponse({
+      id: "msg_x",
+      body_received: "hellz world", // diverges at byte 4
+    });
+    await expect(
+      tool.handler(client, {
+        to: "agt_bob",
+        from: "agt_alice",
+        subject: "x",
+        body: "hello world",
+      })
+    ).rejects.toThrow(/byte 4/);
+  });
+
+  it("mismatch error message names the message_id from the response", async () => {
+    const tool = findTool("cueapi_send_message");
+    const { client } = stubClientWithResponse({
+      id: "msg_corrupted_123",
+      body_received: "not what we sent",
+    });
+    await expect(
+      tool.handler(client, {
+        to: "agt_bob",
+        from: "agt_alice",
+        subject: "x",
+        body: "hello",
+      })
+    ).rejects.toThrow(/msg_corrupted_123/);
+  });
+
+  it("missing body_received in response is silently OK (substrate didn't echo)", async () => {
+    // Server may not echo for various reasons (rate-limit, future substrate
+    // change). Verify-on should not fail if the field is absent — only fail
+    // on present-but-mismatched.
+    const tool = findTool("cueapi_send_message");
+    const { client } = stubClientWithResponse({ id: "msg_x" });
+    const result = await tool.handler(client, {
+      to: "agt_bob",
+      from: "agt_alice",
+      subject: "x",
+      body: "hello",
+    });
+    expect(result).toMatchObject({ id: "msg_x" });
   });
 });
 
