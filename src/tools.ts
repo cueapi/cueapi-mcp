@@ -340,6 +340,12 @@ const sendMessageSchema = z.object({
     .describe(
       "Optional ISO 8601 timestamp to schedule this message for future delivery (cueapi #623, §13). Omitted = send now (server default). When set in the future, the message sits in the recipient's inbox-query gate until `send_at <= now()`, then becomes fetchable; push-delivery dispatch is also gated. Past timestamps are treated as send-now (forgiving fallback). Same semantics as cue-fire `send_at` (PR #618)."
     ),
+  auto_verify: z
+    .boolean()
+    .optional()
+    .describe(
+      "Phase 2 body-verify defense-in-depth (Mike directive 2026-05-11). When true (default), the tool sends `X-CueAPI-Verify-Echo: true` on the POST and compares the substrate-echoed `body_received` against the body sent. On mismatch, the tool throws an error with byte-level diff details so callers can detect silent body corruption (e.g. caller-side shell expansion of $(...) / `...` / ${VAR} before reaching the MCP tool). Set to `false` to opt out (rare; perf-sensitive flows only — verify adds zero substrate roundtrips since the echo rides in the same POST response). Parity with cueapi-cli `--no-verify` opt-out (#52) and cueapi-python `auto_verify` kwarg (#39)."
+    ),
 });
 
 // ---------- tools ----------
@@ -697,7 +703,15 @@ export const tools: ToolDefinition[] = [
       if (args.idempotency_key) {
         extraHeaders["Idempotency-Key"] = args.idempotency_key;
       }
-      return client.request(
+      // Phase 2 body-verify defense (Mike directive 2026-05-11). Default
+      // verify-on; opt-out via auto_verify=false. The X-CueAPI-Verify-Echo
+      // header tells the substrate to echo `body_received` in the response
+      // so we can diff sent vs received.
+      const verify = args.auto_verify !== false;
+      if (verify) {
+        extraHeaders["X-CueAPI-Verify-Echo"] = "true";
+      }
+      const resp = await client.request<Record<string, unknown>>(
         "POST",
         "/v1/messages",
         body,
@@ -705,6 +719,54 @@ export const tools: ToolDefinition[] = [
         undefined,
         extraHeaders
       );
+      // Body-verify check. Wire shape per spec-lock (cueapi/cueapi#798,
+      // cueapi-core #88): substrate echoes `body_received` as a STRING. We
+      // also handle the dict shape defensively — that was the transient
+      // wire shape between #795 (initial Layer 1) and #798 (hotfix);
+      // could resurface in a future substrate rev. Matches the cueapi-cli
+      // and cueapi-python defensive isinstance pattern.
+      if (verify && resp && typeof resp === "object") {
+        const receivedRaw = (resp as Record<string, unknown>).body_received;
+        let received: string | undefined;
+        if (typeof receivedRaw === "string") {
+          received = receivedRaw;
+        } else if (
+          receivedRaw &&
+          typeof receivedRaw === "object" &&
+          typeof (receivedRaw as Record<string, unknown>).body === "string"
+        ) {
+          received = (receivedRaw as Record<string, string>).body;
+        }
+        if (received !== undefined && received !== args.body) {
+          // Mismatch — caller-side body corruption (likely shell expansion).
+          // Throw an MCP-visible error with byte-level diff so the caller
+          // can locate the divergence quickly.
+          const sentLen = args.body.length;
+          const recvLen = received.length;
+          let divergedAt = -1;
+          const common = Math.min(sentLen, recvLen);
+          for (let i = 0; i < common; i++) {
+            if (args.body[i] !== received[i]) {
+              divergedAt = i;
+              break;
+            }
+          }
+          if (divergedAt === -1 && sentLen !== recvLen) {
+            divergedAt = common;
+          }
+          const msgId = (resp as Record<string, unknown>).id ?? "<unknown>";
+          throw new Error(
+            `cueapi_send_message body-verify mismatch (message_id=${String(
+              msgId
+            )}): sent ${sentLen} chars, substrate received ${recvLen} chars` +
+              (divergedAt >= 0
+                ? `, first divergence at byte ${divergedAt}`
+                : "") +
+              `. This usually indicates caller-side shell expansion of $(...) / backticks / \${VAR} before reaching the MCP tool. Set auto_verify=false to opt out (rare; perf-sensitive flows only).`
+          );
+        }
+      }
+      return resp;
     },
   },
 ];
