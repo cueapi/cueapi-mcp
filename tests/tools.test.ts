@@ -1330,6 +1330,71 @@ describe("cueapi_send_message — HTTP contract (PR #619 BCC-light)", () => {
     });
   });
 
+  // Agent-id-split refactor (2026-05-12) — live_fallback_mode parameter
+  describe("live_fallback_mode parameter (agent-id-split refactor)", () => {
+    it("default (live_fallback_mode omitted) does not include the field in body", async () => {
+      // Server default = fallback_to_background; wire-format must match
+      // pre-refactor senders when caller doesn't pass the field. Same
+      // shape as the `mode` default-omit behavior.
+      const tool = findTool("cueapi_send_message");
+      const { client, calls } = stubClient();
+      await tool.handler(client, {
+        to: "agt_bob",
+        from: "agt_alice",
+        subject: "x",
+        body: "y",
+      });
+      expect(calls[0].body).not.toHaveProperty("live_fallback_mode");
+    });
+
+    it("explicit live_fallback_mode='fallback_to_background' is also omitted", async () => {
+      // Explicit-default === default; CLI omits on the wire. Symmetric
+      // with `mode: 'auto'` and the cueapi-cli default-omit pattern.
+      const tool = findTool("cueapi_send_message");
+      const { client, calls } = stubClient();
+      await tool.handler(client, {
+        to: "agt_bob",
+        from: "agt_alice",
+        subject: "x",
+        body: "y",
+        live_fallback_mode: "fallback_to_background",
+      });
+      expect(calls[0].body).not.toHaveProperty("live_fallback_mode");
+    });
+
+    it("live_fallback_mode='live_only' is passed through as body.live_fallback_mode", async () => {
+      // The opt-in case — substrate routes the message strictly to the
+      // Live sibling, no parent-agent fallback.
+      const tool = findTool("cueapi_send_message");
+      const { client, calls } = stubClient();
+      await tool.handler(client, {
+        to: "agt_bob",
+        from: "agt_alice",
+        subject: "x",
+        body: "y",
+        live_fallback_mode: "live_only",
+      });
+      expect(calls[0].body).toMatchObject({
+        live_fallback_mode: "live_only",
+      });
+    });
+
+    it("invalid live_fallback_mode value rejected client-side via Zod enum", async () => {
+      // Zod enum gates the value before it can hit the wire; same shape
+      // as the `mode` invalid-enum test above.
+      const tool = findTool("cueapi_send_message");
+      expect(() =>
+        tool.schema.parse({
+          to: "agt_bob",
+          from: "agt_alice",
+          subject: "x",
+          body: "y",
+          live_fallback_mode: "neither_one",
+        })
+      ).toThrow();
+    });
+  });
+
   // cueapi #623 — per-message send_at scheduling
   describe("send_at parameter (cueapi #623 — scheduled send)", () => {
     it("send_at is omitted by default (server treats absent === send-now)", async () => {
@@ -1671,6 +1736,73 @@ describe("agent directory tools — HTTP contract", () => {
     expect(calls[0].method).toBe("GET");
     expect(calls[0].path).toBe("/v1/agents");
     expect(calls[0].query).toEqual({});
+  });
+
+  // Agent-id-split refactor (2026-05-12) — cueapi_create_agent tool.
+  // MCP parity with cueapi-cli `agents create --parent-agent-id` (#56).
+  it("cueapi_create_agent → POST /v1/agents with minimal display_name", async () => {
+    const tool = findTool("cueapi_create_agent");
+    const { client, calls } = stubClient();
+    await tool.handler(client, { display_name: "Solo Agent" });
+
+    expect(calls[0].method).toBe("POST");
+    expect(calls[0].path).toBe("/v1/agents");
+    expect(calls[0].body).toEqual({ display_name: "Solo Agent" });
+  });
+
+  it("cueapi_create_agent default-omits parent_agent_id when undefined", async () => {
+    // Standalone (parent) agents should look identical to pre-refactor
+    // create requests on the wire. Same default-omit pattern as the
+    // other optional fields.
+    const tool = findTool("cueapi_create_agent");
+    const { client, calls } = stubClient();
+    await tool.handler(client, {
+      display_name: "Solo",
+      slug: "solo",
+    });
+    expect(calls[0].body).not.toHaveProperty("parent_agent_id");
+  });
+
+  it("cueapi_create_agent passes parent_agent_id through to body", async () => {
+    // The opt-in case for the agent-id-split refactor: link this new
+    // Live-sibling agent to the BG sibling's id so substrate can fall
+    // back from Live to BG when the Live session is silent.
+    const tool = findTool("cueapi_create_agent");
+    const { client, calls } = stubClient();
+    await tool.handler(client, {
+      display_name: "LinkedIn Content Agent (Live)",
+      slug: "linkedin-content-agent-live",
+      parent_agent_id: "agt_parentbg0001",
+    });
+    expect(calls[0].body).toMatchObject({
+      display_name: "LinkedIn Content Agent (Live)",
+      slug: "linkedin-content-agent-live",
+      parent_agent_id: "agt_parentbg0001",
+    });
+  });
+
+  it("cueapi_create_agent passes webhook_url + metadata through", async () => {
+    const tool = findTool("cueapi_create_agent");
+    const { client, calls } = stubClient();
+    await tool.handler(client, {
+      display_name: "Hooked",
+      webhook_url: "https://example.test/hook",
+      metadata: { team: "platform" },
+    });
+    expect(calls[0].body).toMatchObject({
+      display_name: "Hooked",
+      webhook_url: "https://example.test/hook",
+      metadata: { team: "platform" },
+    });
+  });
+
+  it("cueapi_create_agent schema requires display_name", () => {
+    // Zod gating: missing display_name is a parse error before the
+    // request hits the wire.
+    const tool = findTool("cueapi_create_agent");
+    expect(() =>
+      tool.schema.parse({ slug: "no-name" })
+    ).toThrow();
   });
 
   it("cueapi_list_agents online_only takes precedence over status", async () => {
