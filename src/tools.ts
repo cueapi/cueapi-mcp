@@ -352,6 +352,51 @@ const sendMessageSchema = z.object({
     .describe(
       "Phase 2 body-verify defense-in-depth (Mike directive 2026-05-11). When true (default), the tool sends `X-CueAPI-Verify-Echo: true` on the POST and compares the substrate-echoed `body_received` against the body sent. On mismatch, the tool throws an error with byte-level diff details so callers can detect silent body corruption (e.g. caller-side shell expansion of $(...) / `...` / ${VAR} before reaching the MCP tool). Set to `false` to opt out (rare; perf-sensitive flows only — verify adds zero substrate roundtrips since the echo rides in the same POST response). Parity with cueapi-cli `--no-verify` opt-out (#52) and cueapi-python `auto_verify` kwarg (#39)."
     ),
+  live_fallback_mode: z
+    .enum(["live_only", "fallback_to_background"])
+    .optional()
+    .describe(
+      "Agent-id-split refactor (2026-05-12) — controls behavior when the recipient is a Live-sibling agent and its Live session is silent (no fresh heartbeat). `fallback_to_background` (default — also the wire-format when omitted): substrate looks up the BG sibling via `parent_agent_id` and routes there (work gets done even if Live is detached). `live_only`: message queues against the Live agent until that specific Live session attaches. This MCP tool omits the field on the wire when set to `fallback_to_background` (or omitted) — server treats absent === fallback_to_background. Design Dock: https://trydock.ai/workspaces/agent-id-split-refactor-2026-05-12. Parity with cueapi-cli `--live-fallback-mode` (#56)."
+    ),
+});
+
+// agent-id-split refactor (2026-05-12) — new `cueapi_create_agent` tool
+// provides MCP parity with cueapi-cli `agents create` and exposes
+// `parent_agent_id` (FK linking a Live sibling to its BG sibling so
+// substrate can fall back from Live to BG when the Live session is
+// silent). Optional field; default-omits on wire.
+const createAgentSchema = z.object({
+  display_name: z
+    .string()
+    .min(1)
+    .max(255)
+    .describe(
+      "Human-readable agent name (required, 1-255 chars). Shown in the Agent Directory + on roster snapshots."
+    ),
+  slug: z
+    .string()
+    .optional()
+    .describe(
+      "Per-user unique slug (optional; server derives from display_name when omitted). Stable identifier used in slug-form addresses (`<agent_slug>@<user_slug>`)."
+    ),
+  webhook_url: z
+    .string()
+    .optional()
+    .describe(
+      "Push-delivery target. SSRF-validated by the server. Omit for poll-only (inbox-based) delivery. Pairs with the one-time webhook_secret returned on this create response — save it now; subsequent reads omit it."
+    ),
+  metadata: z
+    .record(z.unknown())
+    .optional()
+    .describe(
+      "Arbitrary JSON metadata blob (server-opaque). Use for client-side tagging / display hints."
+    ),
+  parent_agent_id: z
+    .string()
+    .optional()
+    .describe(
+      "Agent-id-split refactor (2026-05-12) — link this new agent as a sibling of the given parent agent. Used when creating a Live sibling for an existing BG agent: pass the BG agent's id here and substrate stores the FK so router can fall back from Live to BG via parent_agent_id when the Live session is silent (see `live_fallback_mode` on cueapi_send_message). Omit for standalone (parent) agents. Substrate enforces FK validity. Design Dock: https://trydock.ai/workspaces/agent-id-split-refactor-2026-05-12. Parity with cueapi-cli `--parent-agent-id` (#56)."
+    ),
 });
 
 // ---------- tools ----------
@@ -710,10 +755,32 @@ export const tools: ToolDefinition[] = [
       );
     },
   },
-  // Agent directory (read-only) — identity layer for the messaging primitive.
-  // Write operations are intentionally NOT exposed: agents are typically
-  // created/updated/deleted by humans via dashboard or CLI, not by MCP
-  // callers. Adding write surface would create the wrong abstraction.
+  // Agent directory — identity layer for the messaging primitive.
+  //
+  // Note (2026-05-12): the agent-id-split refactor needs `parent_agent_id`
+  // exposed on create so MCP callers can wire Live siblings of an
+  // existing BG agent. The historical "read-only — humans use dashboard/
+  // CLI" stance no longer holds for that workflow. `cueapi_create_agent`
+  // is the additive entry; update/delete remain dashboard-only for now.
+  {
+    name: "cueapi_create_agent",
+    description:
+      "Create a new agent. Returns the created record including a one-time `webhook_secret` when `webhook_url` is set (subsequent reads omit the secret — save it now or call regenerate to mint a new one which will revoke the old). Use `parent_agent_id` to link this new agent as a sibling of an existing parent (BG) agent — substrate stores the FK so the router can fall back from Live to BG via `parent_agent_id` when the Live session is silent (see `live_fallback_mode` on `cueapi_send_message`). Omit `parent_agent_id` for standalone (parent) agents. Agent-id-split refactor (2026-05-12); parity with cueapi-cli `agents create --parent-agent-id` (#56).",
+    schema: createAgentSchema,
+    handler: async (client, args) => {
+      const body: Record<string, unknown> = {
+        display_name: args.display_name,
+      };
+      if (args.slug) body.slug = args.slug;
+      if (args.webhook_url) body.webhook_url = args.webhook_url;
+      if (args.metadata) body.metadata = args.metadata;
+      // Agent-id-split refactor (2026-05-12) — pass-through to substrate.
+      // Default-omit when undefined so wire format matches pre-refactor
+      // senders. Same default-omit pattern as the other optional fields.
+      if (args.parent_agent_id) body.parent_agent_id = args.parent_agent_id;
+      return client.request("POST", "/v1/agents", body);
+    },
+  },
   {
     name: "cueapi_list_agents",
     description:
@@ -790,6 +857,16 @@ export const tools: ToolDefinition[] = [
       // on the common path.
       if (args.mode && args.mode !== "auto") body.delivery_mode = args.mode;
       if (args.send_at) body.send_at = args.send_at;
+      // Agent-id-split refactor (2026-05-12) — default-omit when value
+      // matches the substrate default (fallback_to_background). Same
+      // default-omit pattern as `mode auto`. Wire format unchanged for
+      // pre-refactor senders.
+      if (
+        args.live_fallback_mode &&
+        args.live_fallback_mode !== "fallback_to_background"
+      ) {
+        body.live_fallback_mode = args.live_fallback_mode;
+      }
       const extraHeaders: Record<string, string> = {
         "X-Cueapi-From-Agent": args.from,
       };
